@@ -1,0 +1,3 @@
+mover A, 10
+cmp A, 10
+detener

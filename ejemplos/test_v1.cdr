@@ -1,0 +1,20 @@
+/ Test de todas las instrucciones de V1
+/ V1 solo soporta saltos hacia atras (etiquetas antes del salto)
+const VALOR = 42
+
+@fin
+    detener
+
+@salto_no_igual
+    saltar @fin
+
+@inicio
+    mover A, 10
+    sumar A, 5
+    mover B, A
+    restar A, 3
+    cmp B, A
+    saltar_si_igual @fin        / B=15, A=12 -> no salta
+    mover A, 1                  / A=1 (se ejecuta)
+    saltar_si_no_igual @salto_no_igual  / B=15, A=12 -> salta a detener
+    mover A, 99                 / nunca se ejecuta

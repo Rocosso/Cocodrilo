@@ -1,0 +1,171 @@
+COCODRILO - Lenguaje de programacion ultra-liviano
+===================================================
+
+Filosofia
+---------
+- Legibilidad de Python, velocidad de Assembler, seguridad de Rust
+- Sin capas intermedias: sin LLVM, sin runtime, sin GC, sin OS
+- Traduccion directa a codigo maquina (token -> opcode)
+- Inspirado en MenuetOS/KolibriOS: bare-metal, control total del hardware
+- 100% software libre
+- Auto-bootstrapping: el compilador de Cocodrilo escrito en Cocodrilo
+
+Arquitectura del traductor
+--------------------------
+[Codigo Cocodrilo] -> [Tokenizador minimo] -> [Mapeador directo] -> [Binario plano]
+                                                      |
+                                        +-------------+-------------+
+                                        |             |             |
+                                     Tabla x86   Tabla ARM    Tabla RISC-V
+
+Cada instruccion Cocodrilo se traduce 1:1 a opcodes de maquina.
+No hay AST complejo, no hay optimizador, no hay IR.
+
+Sintaxis
+--------
+- Indentacion con 4 espacios (como Python)
+- Sin parentesis para funciones (ni para agrupar argumentos)
+- Parentesis solo para precedencia en expresiones matematicas: (A + B) * C
+- Comentarios con //
+- Etiquetas con @nombre
+- Constantes con const NOMBRE = valor
+
+Tipos de datos (igual que assembler)
+------------------------------------
+  byte   = 8 bits
+  word   = 16 bits
+  dword  = 32 bits (default)
+  qword  = 64 bits
+
+Registros simbolicos (varian por arquitectura)
+----------------------------------------------
+  A, B, C, D, E, F, G, H  (proposito general)
+  SP  (stack pointer)
+  IP  (instruction pointer)
+
+  Mapeo x86:     A->eax, B->ebx, C->ecx, D->edx, E->esi, F->edi, SP->esp
+  Mapeo ARM:     A->r0,  B->r1,  C->r2,  D->r3,  E->r4,  F->r5,  SP->sp
+  Mapeo RISC-V:  A->x5,  B->x6,  C->x7,  D->x8,  E->x9,  F->x10, SP->x2
+
+Instrucciones
+-------------
+  mover tam? dst, src        ; dst = src
+  sumar tam? dst, src        ; dst += src
+  restar tam? dst, src       ; dst -= src
+  and    tam? dst, src       ; dst &= src
+  or     tam? dst, src       ; dst |= src
+  xor    tam? dst, src       ; dst ^= src
+  not    tam? dst            ; dst = ~dst
+  cmp    a, b                ; compara a con b (flags)
+  saltar_si_igual @etq       ; salta si cmp fue igual
+  saltar_si_no_igual @etq    ; salta si cmp fue distinto
+  saltar_si_mayor @etq       ; salta si dst > src
+  saltar_si_menor @etq       ; salta si dst < src
+  saltar @etq                ; salto incondicional
+  apilar src                 ; push
+  desapilar dst              ; pop
+  llamar @etq                ; call
+  retornar                   ; ret
+  detener                    ; hlt/stop
+  leer dst, [src]            ; load desde memoria
+  escribir [dst], src        ; store a memoria
+  delay_ciclos n             ; delay basado en ciclos
+
+  Sufijos de tamaño: .b (byte), .w (word), .d (dword), .q (qword)
+  Ej: mover.d A, B
+
+Expresiones permisivas
+----------------------
+  Precedencia estandar (multiplicacion antes que suma)
+  Parentesis permitidos para agrupar
+  Ej: mover A, B + C * D    ; A = B + (C * D)
+  Ej: mover A, (B + C) * D  ; A = (B + C) * D
+  Ej: mover A, [B + C * 4]  ; direccionamiento indexado
+
+PLAN DE IMPLEMENTACION POR FASES
+=================================
+
+FASE 0: Estructura del proyecto
+-------------------------------
+  cocodrilo/
+  ├── bin/               ; herramientas compiladas
+  ├── v1/                ; traductor V1 en FASM
+  │   ├── build.sh       ; script de compilacion
+  │   └── traductor.fasm ; compilador bootstrap
+  ├── v2/                ; traductor V2 en Cocodrilo
+  │   └── traductor.cdr  ; rewrite del compilador en si mismo
+  ├── tablas/            ; tablas de opcodes por arquitectura
+  ├── ejemplos/          ; programas de ejemplo
+  │   ├── hola.cdr       ; Hola mundo
+  │   └── blink.cdr      ; Blink LED
+  └── cocodrilo_origen.txt
+
+FASE 1: V1 en FASM (~300 lineas)
+--------------------------------
+  Traductor minimo escrito en FASM (ensamblador x86).
+  Se compila con FASM, produce un binario ELF para Linux.
+
+  Capacidades:
+  - Leer archivo .cdr de entrada
+  - Tokenizar por lineas (split por espacios y comas)
+  - Reconocer instrucciones basicas:
+      const, mover, sumar, restar, cmp,
+      saltar, saltar_si_igual, saltar_si_no_igual, detener
+  - Soporte para etiquetas @nombre
+  - Constantes numericas (const NOMBRE = valor)
+  - Registros: A(->eax), B(->ebx), C(->ecx), D(->edx)
+  - Comentarios //
+  - Emitir binario plano en modo real x86
+  - Escribir archivo .bin de salida
+
+  NO incluye en V1:
+  - Expresiones permisivas (solo: mover A, 42 o mover A, B)
+  - Tipos (solo dword implicito)
+  - Funciones, pila, llamadas
+  - Otras arquitecturas
+  - Sufijos de tamaño
+
+FASE 2: Prueba de concepto - Primer programa Cocodrilo
+------------------------------------------------------
+  Escribir ejemplos/hola.cdr en Cocodrilo.
+  Compilar con V1 -> obtener binario.
+  Probar que funcione.
+
+FASE 3: V2 en Cocodrilo (~1500 lineas)
+---------------------------------------
+  Reescribir el traductor completo en Cocodrilo.
+  Compilar V2 con V1 -> obtener binario V2.
+  Verificar auto-bootstrapping: V2 compila su propio fuente
+  y produce binario identico.
+
+  Capacidades completas:
+  - Expresiones permisivas con precedencia y parentesis
+  - Tipos byte, word, dword, qword
+  - Sufijos .b, .w, .d, .q
+  - Funciones (fn), pila, llamar, retornar
+  - Tablas de opcodes separadas: x86, ARM, RISC-V
+  - Direccionamiento a memoria [reg + desplazamiento]
+
+FASE 4: Runtime bare-metal y ejemplos
+--------------------------------------
+  - Formato ejecutable plano para booteo
+  - Programa blink.cdr para x86 real mode
+  - Programa blink.cdr para ESP32 (Xtensa)
+  - Driver minimo de pantalla (VGA text mode)
+  - Driver minimo de GPIO
+
+FASE 5: Auto-suficiencia y expansion
+-------------------------------------
+  - Libreria estandar ultra-liviana en Cocodrilo
+  - Ensamblador inline: asm { ... }
+  - Mas arquitecturas: ARM64, RISC-V 64
+  - Opcional: SO tipo KolibriOS escrito en Cocodrilo
+
+NOTAS TECNICAS
+==============
+- V1: ELF executable for Linux (syscalls int 0x80)
+- Output: flat binary, org 0x7C00 (boot sector) or raw
+- Each Cocodrilo instruction maps to 1-6 bytes of machine code
+- All labels resolved in first pass, emitted in second pass
+- Max source file size for V1: 64KB
+- Max label table for V1: 256 entries
