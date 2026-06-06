@@ -1,0 +1,3 @@
+mover A, 10
+mover B, A
+detener

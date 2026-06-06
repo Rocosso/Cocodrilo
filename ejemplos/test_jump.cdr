@@ -1,0 +1,4 @@
+saltar @fin
+mover A, 1
+@fin
+detener

@@ -1,0 +1,3 @@
+const X = 5
+mover A, X
+detener

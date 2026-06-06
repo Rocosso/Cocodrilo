@@ -1,0 +1,1163 @@
+; cocodrilo V1 - Traductor bootstrap en FASM
+; Compila: fasm traductor.fasm traductor
+; Uso: ./traductor entrada.cdr salida.bin
+;
+; Traduce un subconjunto minimo de Cocodrilo a codigo maquina x86.
+; Soporta: mover, sumar, restar, cmp, saltos, const, etiquetas
+
+format ELF executable 3
+entry _start
+
+SYS_EXIT  = 1
+SYS_READ  = 3
+SYS_WRITE = 4
+SYS_OPEN  = 5
+SYS_CLOSE = 6
+
+O_RDONLY   = 0
+O_WRONLY   = 1
+O_CREAT    = 0100o
+O_TRUNC    = 01000o
+STDERR     = 2
+
+BUFFER_SZ  = 0x10000
+MAX_LABS   = 256
+LAB_SZ     = 64
+MAX_TOKS   = 16
+
+; Registros: A=eax(0), C=ecx(1), D=edx(2), B=ebx(3)
+REG_A = 0
+REG_C = 1
+REG_D = 2
+REG_B = 3
+
+segment readable writeable
+
+src_buf  rb BUFFER_SZ
+src_size rd 1
+src_pos  rd 1
+
+out_buf  rb BUFFER_SZ
+out_pos  rd 1
+cur_ip   rd 1
+
+lab_name rb MAX_LABS * LAB_SZ
+lab_addr rd MAX_LABS
+lab_cnt  rd 1
+
+cst_name rb MAX_LABS * LAB_SZ
+cst_val  rd MAX_LABS
+cst_cnt  rd 1
+
+line_buf rb 256
+tokens   rd MAX_TOKS
+tok_cnt  rd 1
+
+addr_buf rb 64         ; buffer para parsear numeros/nombres
+inp_fname rb 256
+out_fname rb 256
+
+msg_usage    db 'Uso: traductor <entrada.cdr> <salida.bin>', 10
+msg_usage_sz = $ - msg_usage
+msg_noent    db 'Error: no se puede abrir ', 0
+msg_readerr  db 'Error: no se puede leer ', 0
+msg_wrterr   db 'Error: no se puede escribir ', 10
+msg_wrterr_sz = $ - msg_wrterr
+msg_labfull  db 'Error: tabla de etiquetas llena', 10
+msg_labfull_sz = $ - msg_labfull
+msg_synerr   db 'Error de sintaxis', 10
+msg_synerr_sz = $ - msg_synerr
+
+segment readable executable
+
+_start:
+    pop ecx
+    cmp ecx, 3
+    jb usage
+
+    pop eax
+    pop ebx                     ; argv[1] = entrada
+    pop edx                     ; argv[2] = salida
+
+    mov esi, ebx
+    mov edi, inp_fname
+    call str_cpy
+
+    mov esi, edx
+    mov edi, out_fname
+    call str_cpy
+
+    xor eax, eax
+    mov [src_pos], eax
+    mov [out_pos], eax
+    mov [cur_ip], eax
+    mov [lab_cnt], eax
+    mov [cst_cnt], eax
+
+    ; Abrir entrada
+    mov eax, SYS_OPEN
+    mov ebx, inp_fname
+    mov ecx, O_RDONLY
+    int 0x80
+    test eax, eax
+    js open_err
+    mov ebx, eax
+
+    ; Leer entrada
+    mov eax, SYS_READ
+    mov ecx, src_buf
+    mov edx, BUFFER_SZ
+    int 0x80
+    test eax, eax
+    js read_err
+    mov [src_size], eax
+
+    mov eax, SYS_CLOSE
+    int 0x80
+
+    ; PASE 1: recolectar etiquetas y constantes
+    call pase1
+
+    ; Reiniciar posicion de lectura
+    mov [src_pos], 0
+
+    ; PASE 2: generar codigo maquina
+    call pase2
+
+    ; Crear salida
+    mov eax, SYS_OPEN
+    mov ebx, out_fname
+    mov ecx, O_WRONLY + O_CREAT + O_TRUNC
+    mov edx, 0755o
+    int 0x80
+    test eax, eax
+    js write_err
+    mov ebx, eax
+
+    mov eax, SYS_WRITE
+    mov ecx, out_buf
+    mov edx, [out_pos]
+    int 0x80
+
+    mov eax, SYS_CLOSE
+    int 0x80
+
+    xor ebx, ebx
+    mov eax, SYS_EXIT
+    int 0x80
+
+; ---- str_cpy: copia string esi -> edi (hasta null) ----
+str_cpy:
+    lodsb
+    stosb
+    test al, al
+    jnz str_cpy
+    ret
+
+; ---- leer_linea: lee linea del src_buf a line_buf ----
+; devuelve: ecx = longitud, ZF=1 si EOF
+leer_linea:
+    push eax esi edi
+    mov edi, line_buf
+    xor ecx, ecx
+
+.loop:
+    mov eax, [src_pos]
+    cmp eax, [src_size]
+    jae .eof
+
+    mov esi, src_buf
+    add esi, eax
+    lodsb
+    inc [src_pos]
+
+    cmp al, 10
+    je .fin
+    cmp al, 13
+    je .loop
+
+    stosb
+    inc ecx
+    cmp ecx, 254
+    jb .loop
+
+.fin:
+    xor eax, eax
+    stosb
+    test ecx, ecx
+    jmp .ret
+
+.eof:
+    xor eax, eax
+    stosb
+    xor ecx, ecx
+    test ecx, ecx
+
+.ret:
+    pop edi esi eax
+    ret
+
+; ---- tokenizar: separa line_buf en tokens ----
+; devuelve: tok_cnt
+tokenizar:
+    push eax ecx edi esi
+    mov edi, tokens
+    xor ecx, ecx
+    mov esi, line_buf
+
+.saltar:
+    lodsb
+    cmp al, ' '
+    je .saltar
+    cmp al, 9
+    je .saltar
+    cmp al, ','
+    je .saltar
+    cmp al, 0
+    je .fin
+
+    dec esi
+    mov [edi], esi
+    add edi, 4
+    inc ecx
+
+.buscar:
+    lodsb
+    cmp al, ' '
+    je .fin_pal
+    cmp al, 9
+    je .fin_pal
+    cmp al, ','
+    je .fin_pal
+    cmp al, 0
+    je .fin
+    cmp al, 10
+    je .fin
+    cmp al, 13
+    je .fin
+    jmp .buscar
+
+.fin_pal:
+    mov byte [esi-1], 0
+    jmp .saltar
+
+.fin:
+    mov [tok_cnt], ecx
+    pop edi esi ecx eax
+    ret
+
+; ---- es_num: comprueba si string es numero ----
+; esi = string, devuelve: ZF=1 si es numero, ZF=0 si no
+es_num:
+    push eax esi
+    lodsb
+    cmp al, '0'
+    jb .no
+    cmp al, '9'
+    ja .no
+.mas:
+    lodsb
+    test al, al
+    jz .si
+    cmp al, '0'
+    jb .no
+    cmp al, '9'
+    jbe .mas
+.no:
+    mov al, 1       ; al=1, ZF=0
+    test al, al
+    jmp .ret
+.si:
+    xor al, al      ; al=0, ZF=1
+    test al, al
+.ret:
+    pop esi eax
+    ret
+
+; ---- parse_num: convierte string en esi a entero en eax ----
+parse_num:
+    push ebx ecx edx esi
+    xor edx, edx
+.loop:
+    xor eax, eax
+    lodsb
+    test al, al
+    jz .fin
+    sub al, '0'
+    imul edx, 10
+    add edx, eax
+    jmp .loop
+.fin:
+    mov eax, edx
+    pop esi edx ecx ebx
+    ret
+
+; ---- buscar_lab: busca etiqueta @name en lab_name ----
+; esi = nombre (sin @), devuelve: edi=offset, CF=0 si encontrada
+buscar_lab:
+    push eax ecx esi
+    mov ecx, [lab_cnt]
+    test ecx, ecx
+    jz .no
+
+    mov edi, lab_name
+.loop:
+    push esi edi ecx
+.cmp:
+    mov al, [esi]
+    mov ah, [edi]
+    cmp al, ah
+    jne .sig
+    test al, al
+    jz .encontrado
+    inc esi
+    inc edi
+    jmp .cmp
+.sig:
+    pop ecx edi esi
+    add edi, LAB_SZ
+    loop .loop
+    jmp .no
+
+.encontrado:
+    pop ecx edi esi
+    pop ecx esi eax
+    ; Calcular offset: edi - lab_name / LAB_SZ
+    sub edi, lab_name
+    xor edx, edx
+    mov eax, edi
+    mov ecx, LAB_SZ
+    div ecx
+    mov edi, eax           ; indice
+    mov eax, [lab_addr + edi*4]  ; offset
+    clc
+    ret
+
+.no:
+    pop ecx esi eax
+    stc
+    ret
+
+; ---- buscar_cst: busca constante name en cst_name ----
+; esi = nombre, devuelve: eax=valor, CF=0 si encontrada
+buscar_cst:
+    push ecx esi edi
+    mov ecx, [cst_cnt]
+    test ecx, ecx
+    jz .no
+
+    mov edi, cst_name
+.loop:
+    push esi edi ecx
+.cmp:
+    mov al, [esi]
+    mov ah, [edi]
+    cmp al, ah
+    jne .sig
+    test al, al
+    jz .encontrado
+    inc esi
+    inc edi
+    jmp .cmp
+.sig:
+    pop ecx edi esi
+    add edi, LAB_SZ
+    loop .loop
+    jmp .no
+
+.encontrado:
+    pop ecx edi esi
+    pop ecx esi eax
+    sub edi, cst_name
+    xor edx, edx
+    mov eax, edi
+    mov ecx, LAB_SZ
+    div ecx
+    mov eax, [cst_val + eax*4]
+    clc
+    ret
+
+.no:
+    pop ecx esi eax
+    stc
+    ret
+
+; ---- resolver_valor: convierte string a valor numerico ----
+; esi = string, devuelve: eax=valor, CF=0 si ok
+resolver_valor:
+    push esi
+    call es_num
+    pop esi
+    jz .numero
+
+    ; Intentar como constante
+    push esi
+    call buscar_cst
+    pop esi
+    jnc .ret
+
+    stc
+    ret
+
+.numero:
+    call parse_num
+    clc
+.ret:
+    ret
+
+; ---- emitir_byte: escribe un byte al output ----
+emitir_byte:
+    push ebx
+    mov ebx, [out_pos]
+    mov [out_buf + ebx], al
+    inc [out_pos]
+    inc [cur_ip]
+    pop ebx
+    ret
+
+; ---- emitir_dword: escribe dword little-endian ----
+emitir_dword:
+    push eax
+    call emitir_byte
+    shr eax, 8
+    call emitir_byte
+    shr eax, 8
+    call emitir_byte
+    shr eax, 8
+    call emitir_byte
+    pop eax
+    ret
+
+lab_no_encontrada:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_synerr
+    mov edx, msg_synerr_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+; ---- registrar_reg: devuelve en ebx el codigo del registro ----
+; esi = "A"|"B"|"C"|"D", devuelve ebx = 0|3|1|2
+registrar_reg:
+    push eax
+    lodsb
+    xor ebx, ebx
+    cmp al, 'A'
+    je .fin
+    mov ebx, 3          ; B = ebx
+    cmp al, 'B'
+    je .fin
+    mov ebx, 1          ; C = ecx
+    cmp al, 'C'
+    je .fin
+    mov ebx, 2          ; D = edx
+    cmp al, 'D'
+    je .fin
+    mov ebx, -1
+.fin:
+    pop eax
+    ret
+
+; ---- PASE 1: recolectar etiquetas (@) y constantes (const) ----
+pase1:
+    push eax ebx ecx edx esi edi
+
+.loop:
+    mov eax, [src_pos]
+    cmp eax, [src_size]
+    jae .fin
+
+    call leer_linea
+
+    call tokenizar
+    cmp [tok_cnt], 0
+    je .loop
+
+    ; Primer token
+    mov esi, tokens
+    lodsd
+    mov esi, eax
+    lodsb
+
+    cmp al, '/'
+    je .loop
+
+    cmp al, '@'
+    je .loop          ; etiquetas se registran en pase2
+
+    cmp al, 'c'
+    je .check_const
+
+    jmp .loop
+
+.check_const:
+    mov esi, tokens
+    lodsd
+    mov esi, eax
+    ; comparar "const"
+    cmp byte [esi], 'c'
+    jne .loop
+    cmp byte [esi+1], 'o'
+    jne .loop
+    cmp byte [esi+2], 'n'
+    jne .loop
+    cmp byte [esi+3], 's'
+    jne .loop
+    cmp byte [esi+4], 't'
+    jne .loop
+    cmp byte [esi+5], 0
+    jne .loop
+    ; Es "const"
+    call procesar_const
+    jmp .loop
+
+.fin:
+    pop edi esi edx ecx ebx eax
+    ret
+
+; ---- procesar_const: const NAME = VALOR ----
+procesar_const:
+    push eax ebx ecx edx esi edi
+
+    ; Segundo token = nombre
+    mov esi, tokens + 4
+    lodsd
+    mov esi, eax
+
+    mov edi, cst_name
+    mov eax, [cst_cnt]
+    imul eax, LAB_SZ
+    add edi, eax
+    call str_cpy
+
+    ; Tercer token = "=" (opcional, lo saltamos)
+    ; Cuarto token = valor
+    mov esi, tokens + 8
+    lodsd
+    mov esi, eax
+
+    ; Verificar si es '='
+    lodsb
+    cmp al, '='
+    je .saltar_igual
+
+    ; No era '=', volver a empezar
+    dec esi
+    call resolver_valor
+    jmp .guardar
+
+.saltar_igual:
+    mov esi, tokens + 12
+    lodsd
+    mov esi, eax
+    call resolver_valor
+
+.guardar:
+    mov ebx, [cst_cnt]
+    mov [cst_val + ebx*4], eax
+    inc [cst_cnt]
+
+    pop edi esi edx ecx ebx eax
+    ret
+
+; ---- PASE 2: generar codigo maquina ----
+pase2:
+    push eax ebx ecx edx esi edi
+
+.loop:
+    mov eax, [src_pos]
+    cmp eax, [src_size]
+    jae .fin
+
+    call leer_linea
+
+    call tokenizar
+    cmp [tok_cnt], 0
+    je .loop
+
+    ; Primer token = instruccion
+    mov esi, tokens
+    lodsd
+    mov esi, eax
+    lodsb
+
+    cmp al, '/'
+    je .loop
+    cmp al, '@'
+    je .cmd_label
+    cmp al, 'c'
+    je .saltar_const
+
+    ; Decodificar instruccion por primera letra
+    cmp al, 'm'
+    je .cmd_mover
+    cmp al, 's'
+    je .saltar_sum     ; saltar o sumar
+    cmp al, 'r'
+    je .cmd_restar
+    cmp al, 'd'
+    je .cmd_detener
+    cmp al, 'l'
+    je .cmd_llamar
+
+    jmp .error
+
+.saltar_sum:
+    ; Distinguir "saltar" de "sumar"
+    push eax
+    mov esi, [tokens]
+    mov al, [esi+1]        ; segunda letra
+    cmp al, 'u'            ; s**u**mar
+    je .do_sumar
+    cmp al, 'a'            ; s**a**ltar
+    je .do_saltar
+    pop eax
+    jmp .error
+
+.do_sumar:
+    pop eax
+    call instr_sumar
+    jmp .loop
+
+.do_saltar:
+    pop eax
+    call instr_salto
+    jmp .loop
+
+.saltar_const:
+    ; "const" o "cmp"
+    push eax
+    mov esi, [tokens]
+    mov al, [esi+1]        ; segunda letra
+    cmp al, 'o'            ; "const"
+    je .skip
+    cmp al, 'm'            ; "cmp"
+    je .do_cmp
+    pop eax
+    jmp .error
+
+.do_cmp:
+    pop eax
+    call instr_cmp
+    jmp .loop
+
+.skip:
+    pop eax
+    jmp .loop
+
+.cmd_label:
+    mov esi, [tokens]
+    inc esi
+    mov edi, lab_name
+    mov eax, [lab_cnt]
+    cmp eax, MAX_LABS
+    jae lab_full
+    imul eax, LAB_SZ
+    add edi, eax
+    call str_cpy
+    mov eax, [lab_cnt]
+    mov ebx, [cur_ip]
+    mov [lab_addr + eax*4], ebx
+    inc [lab_cnt]
+    jmp .loop
+
+.cmd_mover:
+    call instr_mover
+    jmp .loop
+
+.cmd_sumar:
+    call instr_sumar
+    jmp .loop
+
+.cmd_restar:
+    call instr_restar
+    jmp .loop
+
+.cmd_detener:
+    mov al, 0xF4       ; hlt
+    call emitir_byte
+    jmp .loop
+
+.cmd_llamar:
+    call instr_llamar
+    jmp .loop
+
+.cmd_saltar:
+    ; "saltar", "saltar_si_igual", "saltar_si_no_igual"
+    call instr_salto
+    jmp .loop
+
+.error:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_synerr
+    mov edx, msg_synerr_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+.fin:
+    pop edi esi edx ecx ebx eax
+    ret
+
+; ---- instr_mover: mover dst, src ----
+; Variantes: reg,reg | reg,imm | reg,[reg] | [reg],reg
+instr_mover:
+    push eax ebx ecx edx esi edi
+
+    ; Segundo token = destino
+    mov esi, [tokens + 4]
+    lodsb
+    cmp al, '['
+    je .mem_dest
+    dec esi
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx               ; edx = dst reg
+
+    ; Tercer token = origen
+    mov esi, [tokens + 8]
+    lodsb
+    cmp al, '['
+    je .mem_src
+    dec esi
+
+    call es_num
+    jz .imm
+    push edx
+    call buscar_cst
+    pop edx
+    jnc .imm
+
+    ; mover reg, reg -> 89 ModRM mod=11, reg=src, rm=dst
+    push edx
+    call registrar_reg
+    pop edx
+    cmp ebx, -1
+    je .error
+
+    mov al, 0x89
+    call emitir_byte
+    mov al, bl
+    shl al, 3
+    or al, 0xC0
+    or al, dl
+    call emitir_byte
+    jmp .fin_ok
+
+.imm:
+    ; mover reg, imm32 -> B8+rd imm32
+    call resolver_valor ; eax = value
+    mov ecx, eax        ; ecx = value
+    mov al, 0xB8
+    add al, dl          ; al = 0xB8 | dst
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+    jmp .fin_ok
+
+.mem_src:
+    ; mover reg, [reg] -> 8B ModRM mod=00, reg=dst, rm=src
+    mov esi, [tokens + 8]
+    inc esi              ; saltar [
+    push edx             ; save dst
+    call registrar_reg
+    pop edx
+    cmp ebx, -1
+    je .error
+
+    mov al, 0x8B
+    call emitir_byte
+    mov al, dl           ; dst in bits 5:3
+    shl al, 3
+    or al, bl            ; src in bits 2:0
+    call emitir_byte
+    jmp .fin_ok
+
+.mem_dest:
+    ; mover [reg], reg -> 89 ModRM mod=00, reg=src, rm=dst
+    inc esi              ; saltar [
+    push edx
+    call registrar_reg
+    pop edx
+    cmp ebx, -1
+    je .error
+    mov edx, ebx         ; edx = mem base reg
+
+    ; Tercer token = src register
+    mov esi, [tokens + 8]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+
+    mov al, 0x89
+    call emitir_byte
+    mov al, bl           ; src in bits 5:3
+    shl al, 3
+    or al, dl            ; dst mem in bits 2:0
+    call emitir_byte
+
+.fin_ok:
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_sumar: sumar dst, src ----
+; Opcodes: 01 (reg,reg), 05 (eax,imm), 81/0 (reg,imm)
+instr_sumar:
+    push eax ebx ecx edx esi edi
+    mov esi, [tokens + 4]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx               ; edx = dst reg
+
+    mov esi, [tokens + 8]
+    call es_num
+    jz .inm
+    push edx
+    call buscar_cst
+    pop edx
+    jnc .inm
+    push edx
+    call registrar_reg
+    pop edx
+    cmp ebx, -1
+    je .error
+
+    ; sumar reg, reg -> 01 /r
+    mov al, 0x01
+    call emitir_byte
+    mov al, bl
+    shl al, 3
+    or al, 0xC0
+    or al, dl
+    call emitir_byte
+    jmp .fin
+
+.inm:
+    call resolver_valor   ; eax = value
+    mov ecx, eax          ; ecx = imm value
+    cmp dl, REG_A
+    je .eax_imm
+    ; 81 /0 id: add r/m32, imm32
+    mov al, 0x81
+    call emitir_byte
+    mov al, 0xC0
+    or al, dl             ; mod=11, reg=000(add), rm=reg
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+    jmp .fin
+
+.eax_imm:
+    mov al, 0x05
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+
+.fin:
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_restar: restar dst, src ----
+; Opcodes: 29 (reg,reg), 2D (eax,imm), 81/5 (reg,imm)
+instr_restar:
+    push eax ebx ecx edx esi edi
+    mov esi, [tokens + 4]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx               ; edx = dst reg
+
+    mov esi, [tokens + 8]
+    call es_num
+    jz .inm
+    push edx
+    call buscar_cst
+    pop edx
+    jnc .inm
+    push edx
+    call registrar_reg
+    pop edx
+    cmp ebx, -1
+    je .error
+
+    ; reg, reg -> 29 /r
+    mov al, 0x29
+    call emitir_byte
+    mov al, bl
+    shl al, 3
+    or al, 0xC0
+    or al, dl
+    call emitir_byte
+    jmp .fin
+
+.inm:
+    call resolver_valor   ; eax = value
+    mov ecx, eax          ; ecx = imm value
+    cmp dl, REG_A
+    je .eax_imm
+    mov al, 0x81
+    call emitir_byte
+    mov al, 0xE8          ; 0xC0 | (5 << 3) = 0xE8, reg field=5 for sub
+    or al, dl
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+    jmp .fin
+
+.eax_imm:
+    mov al, 0x2D
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+
+.fin:
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_cmp: cmp dst, src ----
+; Opcodes: 39 (reg,reg), 3D (eax,imm), 81/7 (reg,imm)
+instr_cmp:
+    push eax ebx ecx edx esi edi
+    mov esi, [tokens + 4]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx
+
+    mov esi, [tokens + 8]
+    call es_num
+    jz .inm
+    push edx
+    call buscar_cst
+    pop edx
+    jnc .inm
+    push edx
+    call registrar_reg
+    pop edx
+    cmp ebx, -1
+    je .error
+
+    ; reg, reg -> 39 /r
+    mov al, 0x39
+    call emitir_byte
+    mov al, bl
+    shl al, 3
+    or al, 0xC0
+    or al, dl
+    call emitir_byte
+    jmp .fin
+
+.inm:
+    call resolver_valor
+    mov ecx, eax
+    cmp dl, REG_A
+    je .eax_imm
+    mov al, 0x81
+    call emitir_byte
+    mov al, 0xF8          ; 0xC0 | (7 << 3) = 0xF8
+    or al, dl
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+    jmp .fin
+
+.eax_imm:
+    mov al, 0x3D
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+
+.fin:
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_salto: saltar, saltar_si_igual, etc ----
+instr_salto:
+    push eax ebx ecx edx esi edi
+
+    ; Comparar "saltar" vs "saltar_si_igual" vs "saltar_si_no_igual"
+    mov esi, tokens
+    lodsd
+    mov esi, eax
+    cmp byte [esi+6], 0
+    jne .no_saltar
+    cmp byte [esi+5], 'r'
+    jne .error
+    jmp .incondicional
+
+.no_saltar:
+    cmp byte [esi+6], '_'       ; todas las variantes largas tienen _ en pos 6
+    jne .error
+    cmp byte [esi+15], 0        ; saltar_si_igual = 15 chars (0-14)
+    jne .largo18
+    jmp .si_igual
+
+.largo18:
+    cmp byte [esi+18], 0        ; saltar_si_no_igual = 18 chars (0-17)
+    jne .error
+    jmp .si_no_igual
+
+.incondicional:
+    mov al, 0xEB
+    jmp .emitir
+
+.si_igual:
+    mov al, 0x74
+    jmp .emitir
+
+.si_no_igual:
+    mov al, 0x75
+
+.emitir:
+    call emitir_byte        ; opcode (EB/74/75)
+    mov edx, [cur_ip]       ; posicion del byte rel8
+    inc edx                 ; +1 (sigue inmediatamente despues del opcode)
+
+    mov esi, tokens + 4
+    lodsd
+    mov esi, eax
+    cmp byte [esi], '@'
+    jne .error
+    inc esi                 ; saltar @
+    push edx                ; salvar cur_ip+1 (buscar_lab destruye edx)
+    call buscar_lab
+    pop edx                 ; restaurar cur_ip+1
+    jc lab_no_encontrada
+
+    sub eax, edx            ; offset = label_addr - current_pos
+    call emitir_byte
+
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_llamar: llamar @funcion ----
+instr_llamar:
+    push eax ebx ecx edx esi edi
+    mov al, 0xE8           ; call rel32
+    call emitir_byte
+
+    mov edx, [cur_ip]
+    add edx, 4             ; posicion despues del rel32 (call = 1 opcode + 4 offset)
+
+    mov esi, tokens + 4
+    lodsd
+    mov esi, eax
+    cmp byte [esi], '@'
+    jne .error
+    inc esi
+    push edx                ; salvar cur_ip (buscar_lab destruye edx)
+    call buscar_lab
+    pop edx                 ; restaurar cur_ip
+    jc lab_no_encontrada
+
+    ; rel32 = label_addr - current_pos
+    sub eax, edx
+    call emitir_dword
+
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- str_len: longitud de string en esi ----
+str_len:
+    push esi
+    xor eax, eax
+.loop:
+    lodsb
+    test al, al
+    jz .fin
+    inc eax
+    jmp .loop
+.fin:
+    pop esi
+    ret
+
+; ---- Manejadores de error ----
+usage:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_usage
+    mov edx, msg_usage_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+open_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_noent
+    mov edx, 21
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+read_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_readerr
+    mov edx, 21
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+write_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_wrterr
+    mov edx, msg_wrterr_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+lab_full:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_labfull
+    mov edx, msg_labfull_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+syn_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_synerr
+    mov edx, msg_synerr_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
