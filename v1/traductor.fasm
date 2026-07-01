@@ -1,6 +1,6 @@
 ; cocodrilo V1 - Traductor bootstrap en FASM
 ; Compila: fasm traductor.fasm traductor
-; Uso: ./traductor entrada.cdr salida.bin
+; Uso: ./traductor entrada.ccdl salida.bin
 ;
 ; Traduce un subconjunto minimo de Cocodrilo a codigo maquina x86.
 ; Soporta: mover, sumar, restar, cmp, saltos, const, etiquetas
@@ -57,7 +57,7 @@ addr_buf rb 64         ; buffer para parsear numeros/nombres
 inp_fname rb 256
 out_fname rb 256
 
-msg_usage    db 'Uso: traductor <entrada.cdr> <salida.bin>', 10
+msg_usage    db 'Uso: traductor <entrada.ccdl> <salida.bin>', 10
 msg_usage_sz = $ - msg_usage
 msg_noent    db 'Error: no se puede abrir ', 0
 msg_readerr  db 'Error: no se puede leer ', 0
