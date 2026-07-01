@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "idioma": "Espanol",
+    "codigo": "es",
+    "descripcion": "Idioma fuente de Cocodrilo"
+  },
+  "instrucciones": {
+    "mover": "mover",
+    "sumar": "sumar",
+    "restar": "restar",
+    "y": "y",
+    "o": "o",
+    "o_exclusivo": "o_exclusivo",
+    "no": "no",
+    "comparar": "comparar",
+    "saltar": "saltar",
+    "saltar_si_igual": "saltar_si_igual",
+    "saltar_si_no_igual": "saltar_si_no_igual",
+    "saltar_si_mayor": "saltar_si_mayor",
+    "saltar_si_menor": "saltar_si_menor",
+    "saltar_si_mayor_igual": "saltar_si_mayor_igual",
+    "saltar_si_menor_igual": "saltar_si_menor_igual",
+    "apilar": "apilar",
+    "desapilar": "desapilar",
+    "llamar": "llamar",
+    "retornar": "retornar",
+    "detener": "detener",
+    "leer": "leer",
+    "escribir": "escribir",
+    "retraso_ciclos": "retraso_ciclos"
+  },
+  "tipos": {
+    "octeto": "octeto",
+    "palabra": "palabra",
+    "doble_palabra": "doble_palabra",
+    "cuadruple_palabra": "cuadruple_palabra"
+  },
+  "sufijos": {
+    "o": "o",
+    "p": "p",
+    "dp": "dp",
+    "cp": "cp"
+  },
+  "registros": ["A", "B", "C", "D", "E", "F", "G", "H", "SP", "IP"],
+  "palabras_clave": {
+    "const": "const",
+    "fn": "fn",
+    "asm": "asm",
+    "si": "si"
+  }
+}

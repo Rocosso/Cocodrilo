@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "idioma": "English",
+    "codigo": "en",
+    "descripcion": "English language pack for Cocodrilo"
+  },
+  "instrucciones": {
+    "mover": "move",
+    "sumar": "add",
+    "restar": "subtract",
+    "y": "and",
+    "o": "or",
+    "o_exclusivo": "exclusive_or",
+    "no": "not",
+    "comparar": "compare",
+    "saltar": "jump",
+    "saltar_si_igual": "jump_if_equal",
+    "saltar_si_no_igual": "jump_if_not_equal",
+    "saltar_si_mayor": "jump_if_greater",
+    "saltar_si_menor": "jump_if_less",
+    "saltar_si_mayor_igual": "jump_if_greater_or_equal",
+    "saltar_si_menor_igual": "jump_if_less_or_equal",
+    "apilar": "push",
+    "desapilar": "pop",
+    "llamar": "call",
+    "retornar": "return",
+    "detener": "stop",
+    "leer": "load",
+    "escribir": "store",
+    "retraso_ciclos": "delay_cycles"
+  },
+  "tipos": {
+    "octeto": "byte",
+    "palabra": "word",
+    "doble_palabra": "double_word",
+    "cuadruple_palabra": "quadruple_word"
+  },
+  "sufijos": {
+    "o": "b",
+    "p": "w",
+    "dp": "dw",
+    "cp": "qw"
+  },
+  "registros": ["A", "B", "C", "D", "E", "F", "G", "H", "SP", "IP"],
+  "palabras_clave": {
+    "const": "const",
+    "fn": "fn",
+    "asm": "asm",
+    "si": "if"
+  }
+}

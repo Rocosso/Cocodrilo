@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "idioma": "한국어",
+    "codigo": "ko",
+    "descripcion": "Korean language pack for Cocodrilo"
+  },
+  "instrucciones": {
+    "mover": "이동",
+    "sumar": "더하기",
+    "restar": "빼기",
+    "y": "그리고",
+    "o": "또는",
+    "o_exclusivo": "배타적_또는",
+    "no": "아님",
+    "comparar": "비교",
+    "saltar": "뛰기",
+    "saltar_si_igual": "같으면_뛰기",
+    "saltar_si_no_igual": "다르면_뛰기",
+    "saltar_si_mayor": "크면_뛰기",
+    "saltar_si_menor": "작으면_뛰기",
+    "saltar_si_mayor_igual": "크거나_같으면_뛰기",
+    "saltar_si_menor_igual": "작거나_같으면_뛰기",
+    "apilar": "쌓기",
+    "desapilar": "꺼내기",
+    "llamar": "부르기",
+    "retornar": "돌아가기",
+    "detener": "멈춤",
+    "leer": "읽기",
+    "escribir": "쓰기",
+    "retraso_ciclos": "기다리기_사이클"
+  },
+  "tipos": {
+    "octeto": "바이트",
+    "palabra": "단어",
+    "doble_palabra": "두단어",
+    "cuadruple_palabra": "네단어"
+  },
+  "sufijos": {
+    "o": "바",
+    "p": "단",
+    "dp": "두단",
+    "cp": "네단"
+  },
+  "registros": ["A", "B", "C", "D", "E", "F", "G", "H", "SP", "IP"],
+  "palabras_clave": {
+    "const": "상수",
+    "fn": "함수",
+    "asm": "내장_어셈블",
+    "si": "만약"
+  }
+}
