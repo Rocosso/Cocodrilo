@@ -3,7 +3,7 @@
 ; Uso: ./traductor entrada.ccdl salida.bin
 ;
 ; Traduce un subconjunto minimo de Cocodrilo a codigo maquina x86.
-; Soporta: mover, sumar, restar, cmp, saltos, const, etiquetas
+; Soporta: mover, sumar, restar, y, no, comparar, saltos, const, etiquetas
 
 format ELF executable 3
 entry _start
@@ -481,6 +481,8 @@ pase1:
     mov esi, eax
     lodsb
 
+    cmp al, '#'
+    je .loop
     cmp al, '/'
     je .loop
 
@@ -583,6 +585,8 @@ pase2:
     mov esi, eax
     lodsb
 
+    cmp al, '#'
+    je .loop
     cmp al, '/'
     je .loop
     cmp al, '@'
@@ -596,13 +600,63 @@ pase2:
     cmp al, 's'
     je .saltar_sum     ; saltar o sumar
     cmp al, 'r'
-    je .cmd_restar
+    je .saltar_res     ; restar o retraso_ciclos (solo restar en V1)
     cmp al, 'd'
-    je .cmd_detener
+    je .saltar_det     ; detener o desapilar (solo detener en V1)
     cmp al, 'l'
-    je .cmd_llamar
+    je .saltar_ll      ; llamar o leer (solo llamar en V1)
+    cmp al, 'y'
+    je .cmd_y          ; y (AND bitwise)
+    cmp al, 'n'
+    je .cmd_no         ; no (NOT bitwise)
 
     jmp .error
+
+.saltar_res:
+    ; Distinguir "restar" de "retraso_ciclos"
+    push eax
+    mov esi, [tokens]
+    mov al, [esi+2]        ; tercera letra
+    cmp al, 's'            ; re**s**tar
+    je .do_restar
+    pop eax
+    jmp .error
+
+.do_restar:
+    pop eax
+    call instr_restar
+    jmp .loop
+
+.saltar_det:
+    ; Distinguir "detener" de "desapilar"
+    push eax
+    mov esi, [tokens]
+    mov al, [esi+4]        ; quinta letra
+    cmp al, 'n'            ; dete**n**er (d=0,e=1,t=2,e=3,n=4)
+    je .do_detener
+    pop eax
+    jmp .error
+
+.do_detener:
+    pop eax
+    mov al, 0xF4       ; hlt
+    call emitir_byte
+    jmp .loop
+
+.saltar_ll:
+    ; Distinguir "llamar" de "leer"
+    push eax
+    mov esi, [tokens]
+    mov al, [esi+1]        ; segunda letra
+    cmp al, 'l'            ; l**l**amar
+    je .do_llamar
+    pop eax
+    jmp .error
+
+.do_llamar:
+    pop eax
+    call instr_llamar
+    jmp .loop
 
 .saltar_sum:
     ; Distinguir "saltar" de "sumar"
@@ -627,13 +681,13 @@ pase2:
     jmp .loop
 
 .saltar_const:
-    ; "const" o "cmp"
+    ; "const" o "comparar"
     push eax
     mov esi, [tokens]
-    mov al, [esi+1]        ; segunda letra
-    cmp al, 'o'            ; "const"
+    mov al, [esi+2]        ; tercera letra
+    cmp al, 'n'            ; co**n**st
     je .skip
-    cmp al, 'm'            ; "cmp"
+    cmp al, 'm'            ; co**m**parar
     je .do_cmp
     pop eax
     jmp .error
@@ -671,17 +725,12 @@ pase2:
     call instr_sumar
     jmp .loop
 
-.cmd_restar:
-    call instr_restar
+.cmd_y:
+    call instr_y
     jmp .loop
 
-.cmd_detener:
-    mov al, 0xF4       ; hlt
-    call emitir_byte
-    jmp .loop
-
-.cmd_llamar:
-    call instr_llamar
+.cmd_no:
+    call instr_no
     jmp .loop
 
 .cmd_saltar:
@@ -702,6 +751,91 @@ pase2:
 .fin:
     pop edi esi edx ecx ebx eax
     ret
+
+; ---- instr_y: y dst, src (AND bitwise) ----
+; Opcodes: 21 (reg,reg), 25 (eax,imm), 81/4 (reg,imm)
+instr_y:
+    push eax ebx ecx edx esi edi
+    mov esi, [tokens + 4]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx               ; edx = dst reg
+
+    mov esi, [tokens + 8]
+    call es_num
+    jz .inm
+    push edx
+    call buscar_cst
+    pop edx
+    jnc .inm
+    push edx
+    call registrar_reg
+    pop edx
+    cmp ebx, -1
+    je .error
+
+    ; y reg, reg -> 21 /r
+    mov al, 0x21
+    call emitir_byte
+    mov al, bl
+    shl al, 3
+    or al, 0xC0
+    or al, dl
+    call emitir_byte
+    jmp .fin
+
+.inm:
+    call resolver_valor   ; eax = value
+    mov ecx, eax          ; ecx = imm value
+    cmp dl, REG_A
+    je .eax_imm
+    ; 81 /4 id: and r/m32, imm32
+    mov al, 0x81
+    call emitir_byte
+    mov al, 0xE0          ; 0xC0 | (4 << 3) = 0xE0, reg field=4 for and
+    or al, dl
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+    jmp .fin
+
+.eax_imm:
+    mov al, 0x25
+    call emitir_byte
+    mov eax, ecx
+    call emitir_dword
+
+.fin:
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_no: no dst (NOT bitwise) ----
+; Opcode: F7 /2 (not r/m32)
+instr_no:
+    push eax ebx edx esi edi
+    mov esi, [tokens + 4]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx               ; edx = dst reg
+
+    mov al, 0xF7
+    call emitir_byte
+    mov al, 0xD0              ; mod=11, reg=010(not), rm=reg
+    or al, dl
+    call emitir_byte
+
+    pop edi esi edx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ebx eax
+    jmp syn_err
 
 ; ---- instr_mover: mover dst, src ----
 ; Variantes: reg,reg | reg,imm | reg,[reg] | [reg],reg
