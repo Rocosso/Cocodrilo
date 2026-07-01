@@ -9,6 +9,8 @@ Filosofia
 - Inspirado en MenuetOS/KolibriOS: bare-metal, control total del hardware
 - 100% software libre
 - Auto-bootstrapping: el compilador de Cocodrilo escrito en Cocodrilo
+- Multi-idioma: el lenguaje se escribe en español, pero puede traducirse
+  a cualquier idioma mediante paquetes de traduccion
 
 Arquitectura del traductor
 --------------------------
@@ -21,6 +23,9 @@ Arquitectura del traductor
 Cada instruccion Cocodrilo se traduce 1:1 a opcodes de maquina.
 No hay AST complejo, no hay optimizador, no hay IR.
 
+El compilador acepta un flag -l IDIOMA para cargar un paquete de
+traduccion y mapear las palabras clave antes de tokenizar.
+
 Sintaxis
 --------
 - Indentacion con 4 espacios (como Python)
@@ -30,18 +35,26 @@ Sintaxis
 - Etiquetas con @nombre
 - Constantes con const NOMBRE = valor
 
-Tipos de datos (igual que assembler)
-------------------------------------
-  byte   = 8 bits
-  word   = 16 bits
-  dword  = 32 bits (default)
-  qword  = 64 bits
+Tipos de datos
+--------------
+  octeto           = 8 bits (byte)
+  palabra          = 16 bits (word)
+  doble_palabra    = 32 bits (dword), por defecto
+  cuadruple_palabra = 64 bits (qword)
+
+  Sufijos de tamaño:
+    .o  = octeto
+    .p  = palabra
+    .dp = doble_palabra
+    .cp = cuadruple_palabra
+
+  Ej: mover.dp A, B
 
 Registros simbolicos (varian por arquitectura)
 ----------------------------------------------
   A, B, C, D, E, F, G, H  (proposito general)
-  SP  (stack pointer)
-  IP  (instruction pointer)
+  SP  (puntero de pila / stack pointer)
+  IP  (puntero de instruccion / instruction pointer)
 
   Mapeo x86:     A->eax, B->ebx, C->ecx, D->edx, E->esi, F->edi, SP->esp
   Mapeo ARM:     A->r0,  B->r1,  C->r2,  D->r3,  E->r4,  F->r5,  SP->sp
@@ -49,30 +62,45 @@ Registros simbolicos (varian por arquitectura)
 
 Instrucciones
 -------------
-  mover tam? dst, src        ; dst = src
-  sumar tam? dst, src        ; dst += src
-  restar tam? dst, src       ; dst -= src
-  and    tam? dst, src       ; dst &= src
-  or     tam? dst, src       ; dst |= src
-  xor    tam? dst, src       ; dst ^= src
-  not    tam? dst            ; dst = ~dst
-  cmp    a, b                ; compara a con b (flags)
-  saltar_si_igual @etq       ; salta si cmp fue igual
-  saltar_si_no_igual @etq    ; salta si cmp fue distinto
-  saltar_si_mayor @etq       ; salta si dst > src
-  saltar_si_menor @etq       ; salta si dst < src
-  saltar @etq                ; salto incondicional
-  apilar src                 ; push
-  desapilar dst              ; pop
-  llamar @etq                ; call
-  retornar                   ; ret
-  detener                    ; hlt/stop
-  leer dst, [src]            ; load desde memoria
-  escribir [dst], src        ; store a memoria
-  delay_ciclos n             ; delay basado en ciclos
 
-  Sufijos de tamaño: .b (byte), .w (word), .d (dword), .q (qword)
-  Ej: mover.d A, B
+  -- Movimiento y memoria --
+  mover   tam? dst, src       ; dst = src (mover datos)
+  leer    dst, [src]          ; cargar desde memoria (load)
+  escribir [dst], src         ; guardar a memoria (store)
+
+  -- Aritmeticas --
+  sumar   tam? dst, src       ; dst = dst + src
+  restar  tam? dst, src       ; dst = dst - src
+
+  -- Logicas bitwise --
+  y       tam? dst, src       ; dst = dst & src (AND bitwise)
+  o       tam? dst, src       ; dst = dst | src (OR bitwise)
+  o_exclusivo tam? dst, src   ; dst = dst ^ src (XOR bitwise)
+  no      tam? dst            ; dst = ~dst (NOT bitwise, complemento)
+
+  -- Comparacion --
+  comparar a, b               ; compara a con b, establece banderas
+
+  -- Saltos (control de flujo) --
+  saltar @etiqueta            ; salto incondicional
+  saltar_si_igual @etiqueta   ; salta si la comparacion fue igual
+  saltar_si_no_igual @etiqueta; salta si la comparacion fue distinta
+  saltar_si_mayor @etiqueta   ; salta si dst > src
+  saltar_si_menor @etiqueta   ; salta si dst < src
+  saltar_si_mayor_igual @etiqueta ; salta si dst >= src
+  saltar_si_menor_igual @etiqueta ; salta si dst <= src
+
+  -- Pila --
+  apilar  src                 ; push: colocar en la pila
+  desapilar dst               ; pop: sacar de la pila
+
+  -- Llamadas a subrutinas --
+  llamar  @funcion            ; call: llama a una subrutina
+  retornar                    ; ret: regresa de la subrutina
+
+  -- Control del sistema --
+  detener                     ; hlt: detiene la ejecucion
+  retraso_ciclos n            ; delay: espera n ciclos de reloj
 
 Expresiones permisivas
 ----------------------
@@ -82,34 +110,38 @@ Expresiones permisivas
   Ej: mover A, (B + C) * D  ; A = (B + C) * D
   Ej: mover A, [B + C * 4]  ; direccionamiento indexado
 
+Palabras clave del lenguaje
+---------------------------
+  const     ; definir una constante: const NOMBRE = valor
+  fn        ; definir una funcion (a futuro): fn nombre @ ...
+  asm       ; ensamblador inline (a futuro): asm { ... }
+
+Extension de archivo
+--------------------
+  .ccdl  (iniciales de CO-CA-DRI-LO)
+
 PLAN DE IMPLEMENTACION POR FASES
 =================================
 
-FASE 0: Estructura del proyecto
--------------------------------
-  cocodrilo/
-  ├── bin/               ; herramientas compiladas
-  ├── v1/                ; traductor V1 en FASM
-  │   ├── build.sh       ; script de compilacion
-  │   └── traductor.fasm ; compilador bootstrap
-  ├── v2/                ; traductor V2 en Cocodrilo
-  │   └── traductor.cdr  ; rewrite del compilador en si mismo
-  ├── tablas/            ; tablas de opcodes por arquitectura
-  ├── ejemplos/          ; programas de ejemplo
-  │   ├── hola.cdr       ; Hola mundo
-  │   └── blink.cdr      ; Blink LED
-  └── cocodrilo_origen.txt
+FASE 0: Españolizacion, extension VS Code y migracion .ccdl
+------------------------------------------------------------
+  0A - Españolizar todos los nombres del lenguaje:
+       tipos: octeto, palabra, doble_palabra, cuadruple_palabra
+       sufijos: .o, .p, .dp, .cp
+       instrucciones: y, o, o_exclusivo, no, comparar, retraso_ciclos
+  0B - Migrar extension .cdr -> .ccdl en todo el proyecto
+  0C - Crear extension VS Code con colores semanticos
 
-FASE 1: V1 en FASM (~300 lineas)
---------------------------------
-  Traductor minimo escrito en FASM (ensamblador x86).
+FASE 1: V1 en FASM actualizado
+------------------------------
+  Compilador bootstrap escrito en FASM (ensamblador x86).
   Se compila con FASM, produce un binario ELF para Linux.
 
   Capacidades:
-  - Leer archivo .cdr de entrada
+  - Leer archivo .ccdl de entrada
   - Tokenizar por lineas (split por espacios y comas)
-  - Reconocer instrucciones basicas:
-      const, mover, sumar, restar, cmp,
+  - Reconocer instrucciones basicas en español puro:
+      const, mover, sumar, restar, comparar, y, o, o_exclusivo, no,
       saltar, saltar_si_igual, saltar_si_no_igual, detener
   - Soporte para etiquetas @nombre
   - Constantes numericas (const NOMBRE = valor)
@@ -119,19 +151,35 @@ FASE 1: V1 en FASM (~300 lineas)
   - Escribir archivo .bin de salida
 
   NO incluye en V1:
-  - Expresiones permisivas (solo: mover A, 42 o mover A, B)
-  - Tipos (solo dword implicito)
+  - Expresiones permisivas
+  - Tipos (solo doble_palabra implicito)
   - Funciones, pila, llamadas
   - Otras arquitecturas
   - Sufijos de tamaño
 
-FASE 2: Prueba de concepto - Primer programa Cocodrilo
-------------------------------------------------------
-  Escribir ejemplos/hola.cdr en Cocodrilo.
-  Compilar con V1 -> obtener binario.
-  Probar que funcione.
+FASE 2: Paquetes de idioma (tablas de traduccion)
+--------------------------------------------------
+  Crear sistema de paquetes de idioma en tablas/idiomas/:
 
-FASE 3: V2 en Cocodrilo (~1500 lineas)
+  tablas/idiomas/
+  ├── base_es.json    # Español (idioma fuente)
+  ├── en.json         # Traduccion a ingles
+  └── ko.json         # Traduccion a coreano
+
+  Formato: JSON con mapeo de cada instruccion, tipo y palabra clave
+  a su equivalente en el idioma destino.
+
+  El compilador acepta -l es|en|ko para cargar la tabla y traducir
+  el codigo antes de compilar.
+
+FASE 3: Tablas de opcodes
+--------------------------
+  tablas/
+  ├── x86.json          # opcodes x86-32
+  ├── arm.json          # opcodes ARM
+  └── riscv.json        # opcodes RISC-V
+
+FASE 4: V2 en Cocodrilo (~1500 lineas)
 ---------------------------------------
   Reescribir el traductor completo en Cocodrilo.
   Compilar V2 con V1 -> obtener binario V2.
@@ -140,25 +188,27 @@ FASE 3: V2 en Cocodrilo (~1500 lineas)
 
   Capacidades completas:
   - Expresiones permisivas con precedencia y parentesis
-  - Tipos byte, word, dword, qword
-  - Sufijos .b, .w, .d, .q
+  - Tipos octeto, palabra, doble_palabra, cuadruple_palabra
+  - Sufijos .o, .p, .dp, .cp
   - Funciones (fn), pila, llamar, retornar
   - Tablas de opcodes separadas: x86, ARM, RISC-V
   - Direccionamiento a memoria [reg + desplazamiento]
+  - Soporte multi-idioma integrado
 
-FASE 4: Runtime bare-metal y ejemplos
+FASE 5: Runtime bare-metal y ejemplos
 --------------------------------------
   - Formato ejecutable plano para booteo
-  - Programa blink.cdr para x86 real mode
-  - Programa blink.cdr para ESP32 (Xtensa)
+  - Programa blink.ccdl para x86 real mode
+  - Programa blink.ccdl para ESP32 (Xtensa)
   - Driver minimo de pantalla (VGA text mode)
   - Driver minimo de GPIO
 
-FASE 5: Auto-suficiencia y expansion
+FASE 6: Auto-suficiencia y expansion
 -------------------------------------
   - Libreria estandar ultra-liviana en Cocodrilo
   - Ensamblador inline: asm { ... }
   - Mas arquitecturas: ARM64, RISC-V 64
+  - Mas paquetes de idioma
   - Opcional: SO tipo KolibriOS escrito en Cocodrilo
 
 NOTAS TECNICAS
@@ -169,3 +219,4 @@ NOTAS TECNICAS
 - All labels resolved in first pass, emitted in second pass
 - Max source file size for V1: 64KB
 - Max label table for V1: 256 entries
+- Extension de archivo: .ccdl
