@@ -1,0 +1,31 @@
+{
+  "name": "cocodrilo-language",
+  "displayName": "Cocodrilo Language",
+  "description": "Soporte de lenguaje Cocodrilo - resaltado de sintaxis para .ccdl",
+  "version": "0.1.0",
+  "publisher": "cocodrilo-lang",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cocodrilo",
+        "aliases": ["Cocodrilo", "cocodrilo"],
+        "extensions": [".ccdl"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cocodrilo",
+        "scopeName": "source.cocodrilo",
+        "path": "./syntaxes/ccdl.tmLanguage.json"
+      }
+    ]
+  }
+}
