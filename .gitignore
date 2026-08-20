@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Cocodrilo V1 build artifacts
+v1/traductor
+bin/fasm
+
+# KDE Dolphin metadata
+.directory
