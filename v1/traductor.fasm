@@ -1,6 +1,6 @@
 ; cocodrilo V1 - Traductor bootstrap en FASM
 ; Compila: fasm traductor.fasm traductor
-; Uso: ./traductor entrada.cdr salida.bin
+; Uso: ./traductor entrada.ccdl salida.bin
 ;
 ; Traduce un subconjunto minimo de Cocodrilo a codigo maquina x86.
 ; Soporta: mover, sumar, restar, cmp, saltos, const, etiquetas
@@ -528,11 +528,15 @@ pase1:
     mov esi, tokens
     lodsd
     mov esi, eax
-    ; comparar "const"
-    cmp byte [esi], 'c'
-    jne .loop
+    ; Segunda letra
     cmp byte [esi+1], 'o'
-    jne .loop
+    je .check_const_name
+    cmp byte [esi+1], 'a'
+    je .check_cadena
+    jmp .loop
+
+.check_const_name:
+    ; "const": c,o,n,s,t
     cmp byte [esi+2], 'n'
     jne .loop
     cmp byte [esi+3], 's'
@@ -543,6 +547,21 @@ pase1:
     jne .loop
     ; Es "const"
     call procesar_const
+    jmp .loop
+
+.check_cadena:
+    ; "cadena": c,a,d,e,n,a
+    cmp byte [esi+2], 'd'
+    jne .loop
+    cmp byte [esi+3], 'e'
+    jne .loop
+    cmp byte [esi+4], 'n'
+    jne .loop
+    cmp byte [esi+5], 'a'
+    jne .loop
+    cmp byte [esi+6], 0
+    jne .loop
+    ; Es "cadena" - procesar en siguiente PR
     jmp .loop
 
 .fin:
@@ -661,20 +680,45 @@ pase2:
     jmp .loop
 
 .saltar_const:
-    ; "const" o "cmp"
+    ; "const", "cadena" o "comparar"
     push eax
     mov esi, [tokens]
     mov al, [esi+1]        ; segunda letra
-    cmp al, 'o'            ; "const"
-    je .skip
-    cmp al, 'm'            ; "cmp"
-    je .do_cmp
+    cmp al, 'o'            ; "const" o "comparar"
+    je .check_co
+    cmp al, 'a'            ; "cadena"
+    je .check_cadena
     pop eax
     jmp .error
 
-.do_cmp:
+.check_co:
+    ; Tercera letra: 'n' = const, 'm' = comparar
+    mov al, [esi+2]
+    cmp al, 'n'            ; co**n**st
+    je .skip
+    cmp al, 'm'            ; co**m**parar
+    je .do_comparar
     pop eax
-    call instr_cmp
+    jmp .error
+
+.check_cadena:
+    ; Verificar "cadena" completo: c,a,d,e,n,a
+    cmp byte [esi+2], 'd'
+    jne .error
+    cmp byte [esi+3], 'e'
+    jne .error
+    cmp byte [esi+4], 'n'
+    jne .error
+    cmp byte [esi+5], 'a'
+    jne .error
+    cmp byte [esi+6], 0
+    jne .error
+    pop eax
+    jmp .skip              ; cadena ya se proceso en pase1
+
+.do_comparar:
+    pop eax
+    call instr_comparar
     jmp .loop
 
 .skip:
@@ -968,9 +1012,9 @@ instr_restar:
     pop edi esi edx ecx ebx eax
     jmp syn_err
 
-; ---- instr_cmp: cmp dst, src ----
+; ---- instr_comparar: comparar dst, src ----
 ; Opcodes: 39 (reg,reg), 3D (eax,imm), 81/7 (reg,imm)
-instr_cmp:
+instr_comparar:
     push eax ebx ecx edx esi edi
     mov esi, [tokens + 4]
     call registrar_reg
