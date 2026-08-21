@@ -52,8 +52,7 @@ cst_cnt  rd 1
 str_data    rb BUFFER_SZ         ; datos de strings concatenados
 str_data_sz rd 1                 ; bytes usados en str_data
 str_name    rb MAX_LABS * LAB_SZ ; nombre del string
-str_addr    rd MAX_LABS          ; offset dentro de str_data
-str_len     rd MAX_LABS          ; longitud de cada string
+str_lengths rd MAX_LABS          ; longitud de cada string
 str_cnt     rd 1                 ; cantidad de strings
 
 patch_ip    rd MAX_LABS          ; cur_ip donde se emitio la referencia
@@ -666,7 +665,6 @@ procesar_cadena:
     je .con_valor
 
     ; Sin "=", token[2] es el contenido directamente
-    dec esi
     call .copiar_contenido
     jmp .fin
 
@@ -674,7 +672,6 @@ procesar_cadena:
     ; Con "=", token[3] es el contenido
     cmp [tok_cnt], 4
     jb .error
-    mov esi, [tokens + 12]
     call .copiar_contenido
 
 .fin:
@@ -687,26 +684,37 @@ procesar_cadena:
     jmp syn_err
 
 ; ---- copiar_contenido: copia string entre comillas a str_data ----
-; esi = puntero al primer caracter (despues de la comilla de apertura)
+; Escanea line_buf buscando la primera comilla de apertura
+; tokenizar reemplaza espacios por NUL dentro de comillas, por eso
+; dentro del loop se trata NUL como espacio (eran espacios originales)
 .copiar_contenido:
     push eax ecx esi edi
-    ; Saltar comilla de apertura si existe
-    cmp byte [esi], '"'
-    jne .sin_comillas
-    inc esi
-.sin_comillas:
-    ; Calcular destino en str_data
+    ; Buscar primera comilla en line_buf
+    mov esi, line_buf
+.buscar_comilla:
+    lodsb
+    cmp al, '"'
+    je .encontrada
+    cmp al, 0
+    je .fin_sin_comillas
+    jmp .buscar_comilla
+.encontrada:
+    ; esi ya apunta despues de la comilla de apertura
     mov edi, str_data
     add edi, [str_data_sz]
-    xor ecx, ecx            ; longitud = 0
+    xor ecx, ecx
 
 .copiar_loop:
     lodsb
     cmp al, '"'
     je .fin_copia
     cmp al, 0
-    je .fin_copia
-    cmp al, 10              ; newline
+    jne .no_es_nul
+    ; NUL = espacio original reemplazado por tokenizar
+    mov al, ' '
+    jmp .guardar_byte
+.no_es_nul:
+    cmp al, 10
     je .escape_n
     cmp al, '\'
     jne .guardar_byte
@@ -714,7 +722,7 @@ procesar_cadena:
     lodsb
     cmp al, 'n'
     jne .guardar_byte
-    mov al, 10              ; \n -> newline
+    mov al, 10
 .guardar_byte:
     stosb
     inc ecx
@@ -724,14 +732,14 @@ procesar_cadena:
     mov al, 10
     jmp .guardar_byte
 
+.fin_sin_comillas:
+    xor ecx, ecx
+
 .fin_copia:
-    ; Terminar con NUL
     xor al, al
     stosb
-    ; Registrar longitud
     mov eax, [str_cnt]
-    mov [str_len + eax*4], ecx
-    ; Avanzar str_data_sz (longitud + 1 para NUL)
+    mov [str_lengths + eax*4], ecx
     inc ecx
     add [str_data_sz], ecx
     pop edi esi ecx eax
@@ -1546,32 +1554,7 @@ instr_escribir:
     call emitir_dword       ; 5 bytes placeholder
 
     ; Emitir strlen loop + write syscall
-    ; eax = puntero al string (calculado: code_size + str_offset)
-    ;eax ya esta en el placeholder, calculamos luego
-
-    ; Calcular addr: eax = cur_ip (despues del placeholder)
-    ; emitir: add eax, <str_offset> (05 <dword>)
-    mov al, 0x05            ; add eax, imm32
-    call emitir_byte
-    ; Emitir str_offset como placeholder (se parcheara)
-    mov eax, ebx            ; guardar indice
-    push ebx
-    ; Calcular offset aproximado del string
-    ; offset = sumatoria de longitudes anteriores + num_strings_anteriores
-    xor ecx, ecx            ; offset acumulado
-    xor ebx, ebx            ; indice actual
-.calc_offset:
-    cmp ebx, eax
-    jae .calc_done
-    mov edx, [str_len + ebx*4]
-    add ecx, edx
-    inc ecx                 ; +1 para NUL
-    inc ebx
-    jmp .calc_offset
-.calc_done:
-    mov eax, ecx
-    pop ebx
-    call emitir_dword       ; add eax, <offset>
+    ; eax = puntero al string (parcheado por parchear_strings con direccion real)
 
     ; strlen loop: edi = eax (ptr), ecx = 0 (count)
     ; push eax / mov edi, eax / xor ecx, ecx
@@ -1601,7 +1584,7 @@ instr_escribir:
     ; je .done (placeholder, 2 bytes)
     mov al, 0x74            ; je rel8
     call emitir_byte
-    mov al, 0x02            ; offset = 2 (salta sobre inc+jmp)
+    mov al, 0x03            ; offset = 3 (salta sobre inc+jmp)
     call emitir_byte
 
     ; inc ecx
@@ -1611,7 +1594,7 @@ instr_escribir:
     ; jmp .loop (-8 bytes: 1+1+1+1+1+1+1+1 = 8 desde inc hasta cmp)
     mov al, 0xEB            ; jmp rel8
     call emitir_byte
-    mov al, 0xF8            ; -8
+    mov al, 0xF7            ; -9
     call emitir_byte
 
     ; pop eax (restaurar puntero)
@@ -1682,7 +1665,7 @@ parchear_strings:
 .calc_offset:
     cmp esi, ecx
     jae .offset_done
-    mov eax, [str_len + esi*4]
+    mov eax, [str_lengths + esi*4]
     add edx, eax
     inc edx                 ; +1 para NUL
     inc esi
@@ -1717,14 +1700,14 @@ parchear_strings:
 .calc_strofs:
     cmp edi, ebx
     jae .copiar_str
-    mov eax, [str_len + edi*4]
+    mov eax, [str_lengths + edi*4]
     add ecx, eax
     inc ecx                 ; +1 NUL
     inc edi
     jmp .calc_strofs
 .copiar_str:
     add esi, ecx            ; esi = puntero al string en str_data
-    mov ecx, [str_len + ebx*4]
+    mov ecx, [str_lengths + ebx*4]
     inc ecx                 ; +1 para NUL
 .copiar_loop:
     push ecx
