@@ -52,6 +52,9 @@ cst_cnt  rd 1
 str_data    rb BUFFER_SZ         ; datos de strings concatenados
 str_data_sz rd 1                 ; bytes usados en str_data
 str_name    rb MAX_LABS * LAB_SZ ; nombre del string
+
+str_addr    rd MAX_LABS          ; offset dentro de str_data
+
 str_lengths rd MAX_LABS          ; longitud de cada string
 str_cnt     rd 1                 ; cantidad de strings
 
@@ -740,6 +743,9 @@ procesar_cadena:
     stosb
     mov eax, [str_cnt]
     mov [str_lengths + eax*4], ecx
+
+    ; Avanzar str_data_sz (longitud + 1 para NUL)
+
     inc ecx
     add [str_data_sz], ecx
     pop edi esi ecx eax
@@ -1501,7 +1507,7 @@ str_len:
 ; Syntax: escribir @NOMBRE
 ; Emite: codigo para calcular addr + strlen + syscall write
 instr_escribir:
-    push eax ebx ecx esi edi
+    push eax ebx ecx edx esi edi
 
     ; Verificar token[1] = @nombre
     mov esi, [tokens + 4]
@@ -1591,7 +1597,7 @@ instr_escribir:
     mov al, 0x41            ; inc ecx
     call emitir_byte
 
-    ; jmp .loop (-8 bytes: 1+1+1+1+1+1+1+1 = 8 desde inc hasta cmp)
+    ; jmp .loop (-9 bytes: vuelve al cmp)
     mov al, 0xEB            ; jmp rel8
     call emitir_byte
     mov al, 0xF7            ; -9
@@ -1631,15 +1637,15 @@ instr_escribir:
     mov al, 0x80
     call emitir_byte
 
-    pop edi esi ecx ebx eax
+    pop edi esi edx ecx ebx eax
     ret
 
 .no_encontrado:
-    pop edi esi ecx ebx eax
+    pop edi esi edx ecx ebx eax
     jmp str_err
 
 .error:
-    pop edi esi ecx ebx eax
+    pop edi esi edx ecx ebx eax
     jmp syn_err
 
 ; ---- parchear_strings: resolver referencias y emitir datos ----
