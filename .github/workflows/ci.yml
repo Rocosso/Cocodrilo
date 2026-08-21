@@ -33,13 +33,6 @@ jobs:
           fi
           echo "No secrets found"
 
-      - name: Validate FASM syntax
-        run: |
-          for f in $(find . -name '*.fasm' -not -path './.git/*'); do
-            echo "Compiling $f..."
-            fasm "$f" "/tmp/$(basename "$f" .fasm)_test"
-          done
-
       - name: ShellCheck
         run: |
           if command -v shellcheck &> /dev/null; then
@@ -66,13 +59,17 @@ jobs:
           sudo cp /tmp/fasm/fasm /usr/local/bin/
           sudo chmod +x /usr/local/bin/fasm
 
-      - name: Compile traductor
-        run: fasm v1/traductor.fasm /tmp/traductor_test
+      - name: Compile all FASM files
+        run: |
+          for f in $(find . -name '*.fasm' -not -path './.git/*'); do
+            echo "Compiling $f..."
+            fasm "$f" "/tmp/$(basename "$f" .fasm)_test"
+          done
 
-      - name: Verify output is valid ELF
+      - name: Verify traductor is valid ELF
         run: |
           file /tmp/traductor_test | grep -q "ELF" || {
-            echo "::error::Output is not a valid ELF binary"
+            echo "::error::traductor output is not a valid ELF binary"
             exit 1
           }
           echo "ELF validation passed"
