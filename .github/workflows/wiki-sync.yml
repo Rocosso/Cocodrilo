@@ -5,9 +5,14 @@ on:
     branches: [main]
     paths:
       - 'wiki/**'
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
 
 jobs:
   sync-wiki:
@@ -17,25 +22,45 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Clone wiki repo
-        run: |
-          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git /tmp/wiki
+          persist-credentials: false
 
       - name: Sync wiki pages
         run: |
-          # Copiar todas las paginas .md del directorio wiki/ a la wiki
-          cp wiki/*.md /tmp/wiki/ 2>/dev/null || true
+          WIKI_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git"
+          WIKI_DIR="/tmp/wiki"
 
-          # Verificar si hay cambios
-          cd /tmp/wiki
+          # Intentar clonar la wiki; si no existe, inicializarla
+          if ! git clone "$WIKI_URL" "$WIKI_DIR" 2>/dev/null; then
+            echo "Wiki repo not found, initializing..."
+            git init "$WIKI_DIR"
+            cd "$WIKI_DIR"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git remote add origin "$WIKI_URL"
+            # Crear pagina minima para que GitHub cree el wiki
+            echo "# Cocodrilo Wiki" > Home.md
+            git add -A
+            git commit -m "init: create wiki"
+            git push -u origin master
+            echo "Wiki initialized successfully"
+          else
+            echo "Wiki cloned successfully"
+          fi
+
+          # Copiar todas las paginas .md recursivamente
+          rsync -a --include='*/' --include='*.md' --exclude='*' wiki/ "$WIKI_DIR/"
+
+          # Configurar identidad
+          cd "$WIKI_DIR"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet && git diff --cached --quiet; then
+          # Stage y verificar cambios (incluye archivos nuevos no rastreados)
+          git add -A
+
+          if git diff --cached --quiet; then
             echo "No wiki changes to sync"
           else
-            git add -A
             git commit -m "docs: sync wiki from main (${{ github.sha }})"
             git push
             echo "Wiki synced successfully"

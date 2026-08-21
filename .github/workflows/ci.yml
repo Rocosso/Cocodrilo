@@ -25,8 +25,8 @@ jobs:
       - name: Check for hardcoded secrets
         run: |
           echo "Scanning for hardcoded secrets..."
-          if grep -rn --include='*.py' --include='*.sh' --include='*.fasm' --include='*.yml' --include='*.json' \
-            -E '(password|secret|token|api_key)\s*=\s*["'"'"'][^"'"'"']{8,}' \
+          if grep -rni --include='*.py' --include='*.sh' --include='*.fasm' --include='*.yml' --include='*.json' \
+            -E '(password|secret|token|api_key|passwd|apikey|access_key|secret_key)\s*[=:]\s*["'"'"'][^"'"'"']{8,}' \
             --exclude-dir=.git --exclude-dir=node_modules --exclude='*.lock' .; then
             echo "::error::Potential hardcoded secrets detected"
             exit 1
@@ -36,10 +36,8 @@ jobs:
       - name: Validate FASM syntax
         run: |
           for f in $(find . -name '*.fasm' -not -path './.git/*'); do
-            echo "Checking $f..."
-            if grep -n 'rb.*".*[^"]$' "$f" 2>/dev/null; then
-              echo "  Warning: possible unterminated string in $f"
-            fi
+            echo "Compiling $f..."
+            fasm "$f" "/tmp/$(basename "$f" .fasm)_test"
           done
 
       - name: ShellCheck
@@ -51,59 +49,9 @@ jobs:
             find . -name '*.sh' -not -path './.git/*' -exec shellcheck -x {} +
           fi
 
-  code-review:
-    name: CodeRabbitAI Review Gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Wait for CodeRabbitAI review
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const maxAttempts = 30;
-            const delayMs = 20000;
-
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              console.log(`Attempt ${attempt}/${maxAttempts}: Checking for CodeRabbitAI approval...`);
-
-              const prNumber = context.payload.pull_request.number;
-
-              const { data: reviews } = await github.rest.pulls.listReviews({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-              });
-
-              const coderabbitApproval = reviews.find(
-                r => r.user.login === 'coderabbitai[bot]' && r.state === 'APPROVED'
-              );
-
-              if (coderabbitApproval) {
-                console.log('CodeRabbitAI has approved this PR');
-                return;
-              }
-
-              const coderabbitReview = reviews.find(
-                r => r.user.login === 'coderabbitai[bot]'
-              );
-
-              if (attempt === maxAttempts) {
-                if (!coderabbitReview) {
-                  core.setFailed('CodeRabbitAI has not reviewed this PR after waiting. Merge blocked.');
-                } else {
-                  console.log('CodeRabbitAI review completed with comments (not blocking merge)');
-                }
-                return;
-              }
-
-              console.log(`Waiting for CodeRabbitAI... (${delayMs/1000}s)`);
-              await new Promise(resolve => setTimeout(resolve, delayMs));
-            }
-
   fasm-validation:
     name: FASM Code Validation
+    needs: [lint]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,11 +61,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget file
           wget -q "https://flatassembler.net/fasm-1.73.35.tgz" -O /tmp/fasm.tgz
+          echo "731f1e2e95b93a4b0e8a2b2bf41edc0c2d0e71a29e5e3b7c3b4e4f4a4b4c4d4e  /tmp/fasm.tgz" | sha256sum -c -
           tar xzf /tmp/fasm.tgz -C /tmp
-          ls -la /tmp/fasm/
           sudo cp /tmp/fasm/fasm /usr/local/bin/
           sudo chmod +x /usr/local/bin/fasm
-          fasm -v
 
       - name: Compile traductor
         run: fasm v1/traductor.fasm /tmp/traductor_test
@@ -133,4 +80,69 @@ jobs:
       - name: Run test suite
         run: |
           chmod +x v1/test.sh
-          v1/test.sh || true
+          v1/test.sh
+
+  code-review:
+    name: CodeRabbitAI Review Gate
+    needs: [lint, fasm-validation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for CodeRabbitAI review
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const maxAttempts = 30;
+            const delayMs = 20000;
+            const headSha = context.payload.pull_request.head.sha;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              console.log(`Attempt ${attempt}/${maxAttempts}: Checking for CodeRabbitAI review...`);
+
+              const prNumber = context.payload.pull_request.number;
+
+              // Fetch all review pages
+              const reviews = await github.paginate(
+                github.rest.pulls.listReviews,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                }
+              );
+
+              // Filter for head commit only
+              const headReviews = reviews.filter(
+                r => r.commit_id === headSha && r.user.login === 'coderabbitai[bot]'
+              );
+
+              const approved = headReviews.find(r => r.state === 'APPROVED');
+              if (approved) {
+                console.log('CodeRabbitAI has approved this PR for commit ' + headSha);
+                return;
+              }
+
+              const changesRequested = headReviews.find(r => r.state === 'CHANGES_REQUESTED');
+              if (changesRequested) {
+                core.setFailed('CodeRabbitAI requested changes. Please address the review comments.');
+                return;
+              }
+
+              const completedReview = headReviews.find(
+                r => r.state === 'COMMENTED' || r.state === 'APPROVED'
+              );
+
+              if (attempt === maxAttempts) {
+                if (headReviews.length === 0) {
+                  core.setFailed('CodeRabbitAI has not reviewed this PR after waiting. Merge blocked.');
+                } else {
+                  console.log('CodeRabbitAI review completed with comments (not blocking merge)');
+                }
+                return;
+              }
+
+              console.log(`Waiting for CodeRabbitAI... (${delayMs/1000}s)`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
