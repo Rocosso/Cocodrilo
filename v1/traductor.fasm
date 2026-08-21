@@ -792,6 +792,8 @@ pase2:
     je .check_llamar_leer
     cmp al, 'e'
     je .do_escribir
+    cmp al, 'o'
+    je .check_obtener
 
     jmp .error
 
@@ -847,6 +849,41 @@ pase2:
     pop eax
     call instr_salto
     jmp .loop
+
+.check_obtener:
+    ; Distinguir "obtener_tiempo_ms" de "obtener_tiempo_seg"
+    push eax
+    mov esi, [tokens]
+    ; "obtener" = 7 chars,之後: "_tiempo_ms" o "_tiempo_seg"
+    ; Buscar '_' en posicion 7
+    cmp byte [esi+7], '_'
+    jne .error_pop
+    ; Verificar "tiempo" en posiciones 8-13
+    cmp dword [esi+8], 'tiem'
+    jne .error_pop
+    cmp word [esi+12], 'po'
+    jne .error_pop
+    ; Distinguir por el sufijo despues de "tiempo_"
+    cmp byte [esi+14], 'm'    ; _tiempo_m*s*
+    je .do_obtener_ms
+    cmp byte [esi+14], 's'    ; _tiempo_s*eg*
+    je .do_obtener_seg
+    pop eax
+    jmp .error
+
+.do_obtener_ms:
+    pop eax
+    call instr_obtener_tiempo_ms
+    jmp .loop
+
+.do_obtener_seg:
+    pop eax
+    call instr_obtener_tiempo_seg
+    jmp .loop
+
+.error_pop:
+    pop eax
+    jmp .error
 
 .saltar_const:
     ; "const", "cadena" o "comparar"
@@ -1641,6 +1678,212 @@ instr_escribir:
 .no_encontrado:
     pop edi esi edx ecx ebx eax
     jmp str_err
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_obtener_tiempo_ms: obtener_tiempo_ms REG ----
+; Emite gettimeofday() y guarda tiempo en milisegundos en REG
+; gettimeofday(struct timeval *tv, struct timezone *tz)
+; tv.tv_sec * 1000 + tv.tv_usec / 1000
+instr_obtener_tiempo_ms:
+    push eax ebx ecx edx esi edi
+
+    ; Verificar token[1] = registro
+    mov esi, [tokens + 4]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx               ; edx = dst reg
+
+    ; Reservar 8 bytes en stack para timeval
+    mov al, 0x81               ; sub esp, imm8
+    call emitir_byte
+    mov al, 0xEC               ; ModRM: mod=11, reg=101(/5=sub), rm=100(esp)
+    call emitir_byte
+    mov al, 0x08               ; 8 bytes
+    call emitir_byte
+
+    ; gettimeofday(stack_ptr, NULL)
+    ; eax = 16 (sys_gettimeofday)
+    mov al, 0xB8
+    call emitir_byte
+    mov eax, 16
+    call emitir_dword
+
+    ; mov ebx, esp (tv pointer)
+    mov al, 0x89
+    call emitir_byte
+    mov al, 0xE3               ; ModRM: mod=11, reg=100(esp), rm=011(ebx)
+    call emitir_byte
+
+    ; mov ecx, 0 (NULL tz)
+    mov al, 0x31               ; xor ecx, ecx
+    call emitir_byte
+    mov al, 0xC9
+    call emitir_byte
+
+    ; int 0x80
+    mov al, 0xCD
+    call emitir_byte
+    mov al, 0x80
+    call emitir_byte
+
+    ; eax = [esp] (tv_sec)
+    mov al, 0x8B               ; mov eax, [esp]
+    call emitir_byte
+    mov al, 0x04               ; ModRM: mod=00, reg=000(eax), rm=100(esp), no index
+    call emitir_byte
+    mov al, 0x24               ; SIB: base=esp, no index
+    call emitir_byte
+
+    ; eax *= 1000 (mul ecx)
+    mov al, 0xB9               ; mov ecx, 1000
+    call emitir_byte
+    mov eax, 1000
+    call emitir_dword
+
+    ; mul ecx -> edx:eax = eax * ecx
+    mov al, 0xF7               ; mul ecx
+    call emitir_byte
+    mov al, 0xE1               ; ModRM: mod=11, reg=100(/4=mul), rm=001(ecx)
+    call emitir_byte
+
+    ; edx = eax (resultado en 32 bits, descartar edx)
+    mov al, 0x89
+    call emitir_byte
+    mov al, 0xC2               ; mov edx, eax
+    call emitir_byte
+
+    ; ecx = [esp+4] (tv_usec)
+    mov al, 0x8B               ; mov ecx, [esp+4]
+    call emitir_byte
+    mov al, 0x4C               ; ModRM: mod=00, reg=001(ecx), rm=100(esp)
+    call emitir_byte
+    mov al, 0x24               ; SIB: base=esp
+    call emitir_byte
+    mov al, 0x04               ; disp8 = 4
+    call emitir_byte
+
+    ; ecx /= 1000
+    mov eax, 1000
+    push ecx
+    mov ecx, eax
+    pop eax                    ; eax = tv_usec, ecx = 1000
+    ; Guardar ecx temporalmente
+    push ecx
+    mov ecx, 1000              ; ecx = 1000
+    xor edx, edx
+    div ecx                    ; eax = tv_usec / 1000
+    pop ecx                    ; basura, solo limpiar stack
+
+    ; eax = tv_usec/1000, sumar a edx (tv_sec*1000)
+    add eax, edx
+
+    ; Guardar resultado temporalmente
+    push eax
+
+    ; Liberar timeval del stack
+    mov al, 0x81               ; add esp, 8
+    call emitir_byte
+    mov al, 0xC4               ; ModRM: mod=11, reg=000(/0=add), rm=100(esp)
+    call emitir_byte
+    mov al, 0x08
+    call emitir_byte
+
+    ; Restaurar resultado a dst reg
+    pop eax
+
+    ; mov dst, eax
+    mov al, 0x89
+    call emitir_byte
+    ; ModRM: mod=11, reg=000(eax), rm=dst
+    mov al, 0xC0
+    or al, [reg_enc + edx]
+    call emitir_byte
+
+    pop edi esi edx ecx ebx eax
+    ret
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- instr_obtener_tiempo_seg: obtener_tiempo_seg REG ----
+; Emite gettimeofday() y guarda tiempo en segundos en REG
+instr_obtener_tiempo_seg:
+    push eax ebx ecx edx esi edi
+
+    ; Verificar token[1] = registro
+    mov esi, [tokens + 4]
+    call registrar_reg
+    cmp ebx, -1
+    je .error
+    mov edx, ebx               ; edx = dst reg
+
+    ; Reservar 8 bytes en stack para timeval
+    mov al, 0x81               ; sub esp, imm8
+    call emitir_byte
+    mov al, 0xEC
+    call emitir_byte
+    mov al, 0x08
+    call emitir_byte
+
+    ; gettimeofday(stack_ptr, NULL)
+    mov al, 0xB8
+    call emitir_byte
+    mov eax, 16
+    call emitir_dword
+
+    ; mov ebx, esp
+    mov al, 0x89
+    call emitir_byte
+    mov al, 0xE3
+    call emitir_byte
+
+    ; xor ecx, ecx
+    mov al, 0x31
+    call emitir_byte
+    mov al, 0xC9
+    call emitir_byte
+
+    ; int 0x80
+    mov al, 0xCD
+    call emitir_byte
+    mov al, 0x80
+    call emitir_byte
+
+    ; eax = [esp] (tv_sec)
+    mov al, 0x8B
+    call emitir_byte
+    mov al, 0x04
+    call emitir_byte
+    mov al, 0x24
+    call emitir_byte
+
+    ; Guardar resultado
+    push eax
+
+    ; Liberar timeval
+    mov al, 0x81
+    call emitir_byte
+    mov al, 0xC4
+    call emitir_byte
+    mov al, 0x08
+    call emitir_byte
+
+    ; Restaurar y mover a dst
+    pop eax
+
+    mov al, 0x89
+    call emitir_byte
+    mov al, 0xC0
+    or al, [reg_enc + edx]
+    call emitir_byte
+
+    pop edi esi edx ecx ebx eax
+    ret
 
 .error:
     pop edi esi edx ecx ebx eax

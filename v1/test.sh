@@ -137,6 +137,11 @@ else
 fi
 
 echo
+echo "--- Tiempo ---"
+test_inst "obtener_tiempo_ms"    "obtener_tiempo_ms A\ndetener\n"
+test_inst "obtener_tiempo_seg"   "obtener_tiempo_seg B\ndetener\n"
+
+echo
 echo "=== RESULTADOS: $PASS pass, $FAIL fail ==="
 echo
 [ $FAIL -eq 0 ] && echo "TODO OK!" || echo "HAY FALLOS"

@@ -1,0 +1,6 @@
+# test_tiempo.ccdl — Probar instrucciones de tiempo
+# Obtener tiempo en milisegundos
+obtener_tiempo_ms A
+# Obtener tiempo en segundos
+obtener_tiempo_seg B
+detener
