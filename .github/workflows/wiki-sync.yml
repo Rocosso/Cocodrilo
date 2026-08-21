@@ -26,6 +26,7 @@ jobs:
         env:
           WIKI_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
         run: |
+          REPO_DIR="$GITHUB_WORKSPACE"
           WIKI_DIR="/tmp/wiki"
 
           # Clonar wiki existente o crear una nueva
@@ -41,7 +42,7 @@ jobs:
             echo "# Cocodrilo Wiki" > Home.md
             git add -A
             git commit -m "init: create wiki"
-            git push -u origin HEAD:main
+            git push -u origin HEAD:master
             echo "Wiki initialized"
           fi
 
@@ -49,14 +50,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Sincronizar archivos .md y .mmd del directorio wiki/
-          rsync -a --delete --include='*/' --include='*.md' --include='*.mmd' --exclude='*' ../wiki/ ./
+          # Detectar branch de la wiki
+          WIKI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Wiki branch: $WIKI_BRANCH"
 
-          # Renombrar .mmd a .md para que GitHub wiki los reconozca
-          for f in *.mmd; do
-            [ -f "$f" ] || continue
-            mv "$f" "${f%.mmd}.md"
-          done
+          # Limpiar archivos existentes (excepto .git y Home.md)
+          find . -maxdepth 1 -name '*.md' ! -name 'Home.md' -delete
+
+          # Copiar paginas desde el repo
+          cp "$REPO_DIR"/wiki/*.md ./
 
           git add -A
 
@@ -64,6 +66,6 @@ jobs:
             echo "No wiki changes to sync"
           else
             git commit -m "docs: sync wiki from main (${{ github.sha }})"
-            git push
+            git push origin "$WIKI_BRANCH"
             echo "Wiki synced successfully"
           fi
