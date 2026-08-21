@@ -26,7 +26,7 @@ jobs:
         run: |
           echo "Scanning for hardcoded secrets..."
           if grep -rn --include='*.py' --include='*.sh' --include='*.fasm' --include='*.yml' --include='*.json' \
-            -E '(password|secret|token|api_key)\s*=\s*["\x27][^"\x27]{8,}' \
+            -E '(password|secret|token|api_key)\s*=\s*["'"'"'][^"'"'"']{8,}' \
             --exclude-dir=.git --exclude-dir=node_modules --exclude='*.lock' .; then
             echo "::error::Potential hardcoded secrets detected"
             exit 1
@@ -37,10 +37,7 @@ jobs:
         run: |
           for f in $(find . -name '*.fasm' -not -path './.git/*'); do
             echo "Checking $f..."
-            # Check for duplicate global symbols (procedure vs data with same name)
-            procs=$(grep -n '^[a-z_][a-z_0-9]*:' "$f" | sed 's/:.*//' | xargs -I{} grep -oP '^\S+' "$f" | sort)
-            # Check for unterminated strings
-            if grep -n 'string sin cerrar\|rb.*".*[^"]$' "$f" 2>/dev/null; then
+            if grep -n 'rb.*".*[^"]$' "$f" 2>/dev/null; then
               echo "  Warning: possible unterminated string in $f"
             fi
           done
@@ -50,7 +47,8 @@ jobs:
           if command -v shellcheck &> /dev/null; then
             find . -name '*.sh' -not -path './.git/*' -exec shellcheck -x {} +
           else
-            echo "shellcheck not installed, skipping"
+            sudo apt-get update && sudo apt-get install -y shellcheck
+            find . -name '*.sh' -not -path './.git/*' -exec shellcheck -x {} +
           fi
 
   code-review:
@@ -65,15 +63,17 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const maxAttempts = 30;
-            const delayMs = 20000; // 20 seconds
+            const delayMs = 20000;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               console.log(`Attempt ${attempt}/${maxAttempts}: Checking for CodeRabbitAI approval...`);
 
+              const prNumber = context.payload.pull_request.number;
+
               const { data: reviews } = await github.rest.pulls.listReviews({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: context.issue.number,
+                pull_number: prNumber,
               });
 
               const coderabbitApproval = reviews.find(
@@ -85,7 +85,6 @@ jobs:
                 return;
               }
 
-              // Check if CodeRabbitAI has at least completed its review (even with comments)
               const coderabbitReview = reviews.find(
                 r => r.user.login === 'coderabbitai[bot]'
               );
@@ -99,7 +98,7 @@ jobs:
                 return;
               }
 
-              console.log(`CodeRabbitAI review not yet available. Waiting ${delayMs/1000}s...`);
+              console.log(`Waiting for CodeRabbitAI... (${delayMs/1000}s)`);
               await new Promise(resolve => setTimeout(resolve, delayMs));
             }
 
@@ -112,11 +111,13 @@ jobs:
       - name: Install FlatAssembler
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget
-          wget -q https://flatassembler.net/fasm-1.73.30-linux.tgz -O /tmp/fasm.tgz
+          sudo apt-get install -y wget file
+          wget -q "https://flatassembler.net/fasm-1.73.35.tgz" -O /tmp/fasm.tgz
           tar xzf /tmp/fasm.tgz -C /tmp
+          ls -la /tmp/fasm/
           sudo cp /tmp/fasm/fasm /usr/local/bin/
           sudo chmod +x /usr/local/bin/fasm
+          fasm -v
 
       - name: Compile traductor
         run: fasm v1/traductor.fasm /tmp/traductor_test
