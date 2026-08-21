@@ -67,6 +67,12 @@ msg_labfull  db 'Error: tabla de etiquetas llena', 10
 msg_labfull_sz = $ - msg_labfull
 msg_synerr   db 'Error de sintaxis', 10
 msg_synerr_sz = $ - msg_synerr
+msg_name_long db 'Error: nombre demasiado largo', 10
+msg_name_long_sz = $ - msg_name_long
+msg_tok_full  db 'Error: demasiados tokens en linea', 10
+msg_tok_full_sz = $ - msg_tok_full
+msg_buf_full  db 'Error: buffer de salida lleno', 10
+msg_buf_full_sz = $ - msg_buf_full
 
 segment readable executable
 
@@ -81,11 +87,15 @@ _start:
 
     mov esi, ebx
     mov edi, inp_fname
-    call str_cpy
+    mov ecx, 256
+    call str_cpy_max
+    jc usage
 
     mov esi, edx
     mov edi, out_fname
-    call str_cpy
+    mov ecx, 256
+    call str_cpy_max
+    jc usage
 
     xor eax, eax
     mov [src_pos], eax
@@ -146,12 +156,30 @@ _start:
     mov eax, SYS_EXIT
     int 0x80
 
-; ---- str_cpy: copia string esi -> edi (hasta null) ----
-str_cpy:
+; ---- str_cpy_max: copia esi -> edi, max ecx-1 bytes, NUL terminado ----
+; CF=1 si se truncó (nombre demasiado largo)
+str_cpy_max:
+    push eax ecx edi
+    test ecx, ecx
+    jz .trunc
+    dec ecx
+.loop:
+    test ecx, ecx
+    jz .trunc
     lodsb
     stosb
     test al, al
-    jnz str_cpy
+    jz .ok
+    dec ecx
+    jmp .loop
+.trunc:
+    mov byte [edi], 0
+    stc
+    pop edi ecx eax
+    ret
+.ok:
+    clc
+    pop edi ecx eax
     ret
 
 ; ---- leer_linea: lee linea del src_buf a line_buf ----
@@ -217,6 +245,8 @@ tokenizar:
     je .fin
 
     dec esi
+    cmp ecx, MAX_TOKS
+    jae tok_err
     mov [edi], esi
     add edi, 4
     inc ecx
@@ -409,6 +439,8 @@ resolver_valor:
 emitir_byte:
     push ebx
     mov ebx, [out_pos]
+    cmp ebx, BUFFER_SZ
+    jae buf_err
     mov [out_buf + ebx], al
     inc [out_pos]
     inc [cur_ip]
@@ -530,7 +562,9 @@ procesar_const:
     mov eax, [cst_cnt]
     imul eax, LAB_SZ
     add edi, eax
-    call str_cpy
+    mov ecx, LAB_SZ
+    call str_cpy_max
+    jc name_err
 
     ; Tercer token = "=" (opcional, lo saltamos)
     ; Cuarto token = valor
@@ -656,7 +690,9 @@ pase2:
     jae lab_full
     imul eax, LAB_SZ
     add edi, eax
-    call str_cpy
+    mov ecx, LAB_SZ
+    call str_cpy_max
+    jc name_err
     mov eax, [lab_cnt]
     mov ebx, [cur_ip]
     mov [lab_addr + eax*4], ebx
@@ -1157,6 +1193,36 @@ syn_err:
     mov ebx, STDERR
     mov ecx, msg_synerr
     mov edx, msg_synerr_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+name_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_name_long
+    mov edx, msg_name_long_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+tok_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_tok_full
+    mov edx, msg_tok_full_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+buf_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_buf_full
+    mov edx, msg_buf_full_sz
     int 0x80
     mov eax, SYS_EXIT
     mov ebx, 1
