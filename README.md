@@ -190,29 +190,35 @@ cocodrilo/
 
 ## Arquitectura del Compilador
 
-```text
-Fuente .ccdl
-    │
-    ▼
-┌─────────────┐
-│  Pase 1     │  Parsea instrucciones, construye tabla de simbolos
-│  (analisis) │  y tabla de strings
-└─────────────┘
-    │
-    ▼
-┌─────────────┐
-│  Pase 2     │  Genera codigo maquina x86
-│  (codegen)  │  Emite bytes al buffer de salida
-└─────────────┘
-    │
-    ▼
-┌─────────────┐
-│  Parches    │  Resuelve direcciones de strings y etiquetas
-│  (patcher)  │  Escribe datos de strings al final del binario
-└─────────────┘
-    │
-    ▼
-  Binario x86 puro (listo para ejecutar)
+```mermaid
+flowchart TD
+    A["📄 Fuente .ccdl"] --> B
+
+    subgraph PASE1["Pase 1 — Analisis"]
+        B["Tokenizar instrucciones"] --> C["Construir tabla de simbolos"]
+        C --> D["Construir tabla de strings"]
+    end
+
+    PASE1 --> PASE2
+
+    subgraph PASE2["Pase 2 — Codegen"]
+        E["Generar codigo maquina x86"] --> F["Emitir bytes al buffer de salida"]
+    end
+
+    PASE2 --> PASE3
+
+    subgraph PASE3["Parches"]
+        G["Resolver direcciones de strings"] --> H["Resolver direcciones de etiquetas"]
+        H --> I["Escribir datos de strings al final del binario"]
+    end
+
+    PASE3 --> J["⚙️ Binario x86 puro (listo para ejecutar)"]
+
+    style A fill:#e1f5fe,stroke:#0288d1,color:#000
+    style J fill:#c8e6c9,stroke:#388e3c,color:#000
+    style PASE1 fill:#fff3e0,stroke:#f57c00,color:#000
+    style PASE2 fill:#fce4ec,stroke:#c62828,color:#000
+    style PASE3 fill:#f3e5f5,stroke:#7b1fa2,color:#000
 ```
 
 El compilador (`traductor.fasm`) esta escrito en FASM y compila a un ejecutable ELF de ~20KB. Genera binarios raw de x86-32 que se ejecutan directamente en Linux.
