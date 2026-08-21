@@ -1,0 +1,145 @@
+name: CI - Code Review Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, review_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint:
+    name: Lint & Pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint Python files
+        run: ruff check .
+
+      - name: Check for hardcoded secrets
+        run: |
+          echo "Scanning for hardcoded secrets..."
+          if grep -rni --include='*.py' --include='*.sh' --include='*.fasm' --include='*.yml' --include='*.json' \
+            -E '(password|secret|token|api_key|passwd|apikey|access_key|secret_key)\s*[=:]\s*["'"'"'][^"'"'"']{8,}' \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude='*.lock' .; then
+            echo "::error::Potential hardcoded secrets detected"
+            exit 1
+          fi
+          echo "No secrets found"
+
+      - name: ShellCheck
+        run: |
+          if command -v shellcheck &> /dev/null; then
+            find . -name '*.sh' -not -path './.git/*' -exec shellcheck -x {} +
+          else
+            sudo apt-get update && sudo apt-get install -y shellcheck
+            find . -name '*.sh' -not -path './.git/*' -exec shellcheck -x {} +
+          fi
+
+  fasm-validation:
+    name: FASM Code Validation
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FlatAssembler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget file
+          wget -q "https://flatassembler.net/fasm-1.73.35.tgz" -O /tmp/fasm.tgz
+          echo "a34dec7d0bc2dc79faabb68bd8bc2f62b6cfb31d69c01449367ce4cd8098934e  /tmp/fasm.tgz" | sha256sum -c -
+          tar xzf /tmp/fasm.tgz -C /tmp
+          sudo cp /tmp/fasm/fasm /usr/local/bin/
+          sudo chmod +x /usr/local/bin/fasm
+
+      - name: Compile all FASM files
+        run: |
+          for f in $(find . -name '*.fasm' -not -path './.git/*'); do
+            echo "Compiling $f..."
+            fasm "$f" "/tmp/$(basename "$f" .fasm)_test"
+          done
+
+      - name: Verify traductor is valid ELF
+        run: |
+          file /tmp/traductor_test | grep -q "ELF" || {
+            echo "::error::traductor output is not a valid ELF binary"
+            exit 1
+          }
+          echo "ELF validation passed"
+
+      - name: Run test suite
+        run: |
+          chmod +x v1/test.sh
+          v1/test.sh
+
+  code-review:
+    name: CodeRabbitAI Review Gate
+    needs: [lint, fasm-validation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for CodeRabbitAI review
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const maxAttempts = 30;
+            const delayMs = 20000;
+            const headSha = context.payload.pull_request.head.sha;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              console.log(`Attempt ${attempt}/${maxAttempts}: Checking for CodeRabbitAI review...`);
+
+              const prNumber = context.payload.pull_request.number;
+
+              // Fetch all review pages
+              const reviews = await github.paginate(
+                github.rest.pulls.listReviews,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                }
+              );
+
+              // Filter for head commit only
+              const headReviews = reviews.filter(
+                r => r.commit_id === headSha && r.user.login === 'coderabbitai[bot]'
+              );
+
+              const approved = headReviews.find(r => r.state === 'APPROVED');
+              if (approved) {
+                console.log('CodeRabbitAI has approved this PR for commit ' + headSha);
+                return;
+              }
+
+              const changesRequested = headReviews.find(r => r.state === 'CHANGES_REQUESTED');
+              if (changesRequested) {
+                core.setFailed('CodeRabbitAI requested changes. Please address the review comments.');
+                return;
+              }
+
+              const completedReview = headReviews.find(
+                r => r.state === 'COMMENTED' || r.state === 'APPROVED'
+              );
+
+              if (attempt === maxAttempts) {
+                if (headReviews.length === 0) {
+                  core.setFailed('CodeRabbitAI has not reviewed this PR after waiting. Merge blocked.');
+                } else {
+                  console.log('CodeRabbitAI review completed with comments (not blocking merge)');
+                }
+                return;
+              }
+
+              console.log(`Waiting for CodeRabbitAI... (${delayMs/1000}s)`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+            }

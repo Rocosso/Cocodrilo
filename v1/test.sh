@@ -12,8 +12,8 @@ FAIL=0
 test_inst() {
     local name="$1"
     local src="$2"
-    printf "$src" > /tmp/t.ccdl
-    if $V1 /tmp/t.ccdl $TMP 2>/dev/null; then
+    printf '%s' "$src" > /tmp/t.ccdl
+    if "$V1" /tmp/t.ccdl "$TMP" 2>/dev/null; then
         echo "  PASS: $name"
         PASS=$((PASS+1))
     else
@@ -25,7 +25,7 @@ test_inst() {
 test_err() {
     local name="$1"
     local src="$2"
-    printf "$src" > /tmp/t.ccdl
+    printf '%s' "$src" > /tmp/t.ccdl
     if ! $V1 /tmp/t.ccdl $TMP 2>/dev/null; then
         echo "  PASS: $name (error detectado)"
         PASS=$((PASS+1))
@@ -58,7 +58,7 @@ test_err "sintaxis"          "mover A 10\ninvalido\n"
 test_err "etiq no encontrada"  "saltar @nonexist\ndetener\n"
 
 echo
-if $V1 $EJEM/test_v1.ccdl $TMP 2>/dev/null; then
+if "$V1" "$EJEM/test_v1.ccdl" "$TMP" 2>/dev/null; then
     echo "  PASS: test_v1.ccdl INTEGRACION"
     PASS=$((PASS+1))
 else
@@ -84,10 +84,10 @@ printf '%s' 'cadena MSG = "linea1\nlinea2"
 detener
 ' > /tmp/t.ccdl
 if $V1 /tmp/t.ccdl $TMP 2>/dev/null; then
-    echo "  PASS: cadena con escape \\n interno"
+    printf '  PASS: cadena con escape \\n interno\n'
     PASS=$((PASS+1))
 else
-    echo "  FAIL: cadena con escape \\n interno"
+    printf '  FAIL: cadena con escape \\n interno\n'
     FAIL=$((FAIL+1))
 fi
 
@@ -128,7 +128,7 @@ STR_FULL_SRC="${STR_FULL_SRC}detener\n"
 test_err "257 cadenas (tabla llena)"     "$STR_FULL_SRC"
 
 echo
-if $V1 $EJEM/test_cadena.ccdl $TMP 2>/dev/null; then
+if "$V1" "$EJEM/test_cadena.ccdl" "$TMP" 2>/dev/null; then
     echo "  PASS: test_cadena.ccdl INTEGRACION"
     PASS=$((PASS+1))
 else

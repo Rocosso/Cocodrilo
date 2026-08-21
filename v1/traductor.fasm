@@ -801,14 +801,16 @@ pase2:
     mov esi, [tokens]
     mov al, [esi+1]        ; segunda letra
     cmp al, 'l'            ; **l**lamar
-    je .do_llamar
+    je .llamar_found
     cmp al, 'e'            ; **e**er (leer)
     je .do_leer
     pop eax
     jmp .error
 
-.do_llamar:
+.llamar_found:
     pop eax
+    call instr_llamar
+    jmp .loop
 
 .saltar_sum:
     ; Distinguir "saltar", "sumar", "salir"
@@ -942,10 +944,6 @@ pase2:
 
 .do_leer:
     call instr_leer
-    jmp .loop
-
-.do_salir:
-    call instr_salir
     jmp .loop
 
 .error:
