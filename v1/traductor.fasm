@@ -52,6 +52,9 @@ cst_cnt  rd 1
 str_data    rb BUFFER_SZ         ; datos de strings concatenados
 str_data_sz rd 1                 ; bytes usados en str_data
 str_name    rb MAX_LABS * LAB_SZ ; nombre del string
+
+str_addr    rd MAX_LABS          ; offset dentro de str_data
+
 str_lengths rd MAX_LABS          ; longitud de cada string
 str_cnt     rd 1                 ; cantidad de strings
 
@@ -152,6 +155,9 @@ _start:
 
     ; PASE 2: generar codigo maquina
     call pase2
+
+    ; Resolver referencias a strings y emitir datos
+    call parchear_strings
 
     ; Crear salida
     mov eax, SYS_OPEN
@@ -737,6 +743,9 @@ procesar_cadena:
     stosb
     mov eax, [str_cnt]
     mov [str_lengths + eax*4], ecx
+
+    ; Avanzar str_data_sz (longitud + 1 para NUL)
+
     inc ecx
     add [str_data_sz], ecx
     pop edi esi ecx eax
@@ -780,21 +789,52 @@ pase2:
     cmp al, 'd'
     je .cmd_detener
     cmp al, 'l'
-    je .cmd_llamar
+    je .check_llamar_leer
+    cmp al, 'e'
+    je .do_escribir
 
     jmp .error
 
+.check_llamar_leer:
+    ; Distinguir "llamar" de "leer"
+    push eax
+    mov esi, [tokens]
+    mov al, [esi+1]        ; segunda letra
+    cmp al, 'l'            ; **l**lamar
+    je .do_llamar
+    cmp al, 'e'            ; **e**er (leer)
+    je .do_leer
+    pop eax
+    jmp .error
+
+.do_llamar:
+    pop eax
+
 .saltar_sum:
-    ; Distinguir "saltar" de "sumar"
+    ; Distinguir "saltar", "sumar", "salir"
     push eax
     mov esi, [tokens]
     mov al, [esi+1]        ; segunda letra
     cmp al, 'u'            ; s**u**mar
     je .do_sumar
-    cmp al, 'a'            ; s**a**ltar
-    je .do_saltar
+    cmp al, 'a'            ; s**a**ltar o s**a**lir
+    je .check_saltar_salir
     pop eax
     jmp .error
+
+.check_saltar_salir:
+    mov al, [esi+3]        ; cuarta letra
+    cmp al, 't'            ; sal**t**ar
+    je .do_saltar
+    cmp al, 'i'            ; sal**i**r
+    je .do_salir
+    pop eax
+    jmp .error
+
+.do_salir:
+    pop eax
+    call instr_salir
+    jmp .loop
 
 .do_sumar:
     pop eax
@@ -887,13 +927,25 @@ pase2:
     call emitir_byte
     jmp .loop
 
-.cmd_llamar:
+.do_llamar:
     call instr_llamar
     jmp .loop
 
 .cmd_saltar:
     ; "saltar", "saltar_si_igual", "saltar_si_no_igual"
     call instr_salto
+    jmp .loop
+
+.do_escribir:
+    call instr_escribir
+    jmp .loop
+
+.do_leer:
+    call instr_leer
+    jmp .loop
+
+.do_salir:
+    call instr_salir
     jmp .loop
 
 .error:
@@ -1294,6 +1346,149 @@ instr_llamar:
     pop edi esi edx ecx ebx eax
     jmp syn_err
 
+; ---- instr_salir: salir A (exit with code in register A) ----
+; Syntax: salir A
+; Emite: mov eax, 1 / mov ebx, <reg> / int 0x80
+instr_salir:
+    push eax ebx
+
+    ; Verificar token[1] = registro
+    mov esi, [tokens + 4]
+    call parse_reg         ; eax = 0..3 (al, cl, dl, bl)
+    jc .error
+
+    ; mov eax, 1 (sys_exit)
+    mov al, 0xB8
+    call emitir_byte
+    mov eax, 1
+    call emitir_dword
+
+    ; mov ebx, <reg>
+    mov al, 0x89
+    call emitir_byte
+    ; ModRM: mod=11, reg=<src>, rm=011(ebx)
+    mov al, 0xC3           ; base = 11_000_011
+    or al, [reg_enc + eax]  ; combina reg en bits 3-5
+    call emitir_byte
+
+    ; int 0x80
+    mov al, 0xCD
+    call emitir_byte
+    mov al, 0x80
+    call emitir_byte
+
+    pop ebx eax
+    ret
+
+.error:
+    pop ebx eax
+    jmp syn_err
+
+; ---- instr_leer: leer A, N (read stdin into variable) ----
+; Syntax: leer A, N
+; Lee de stdin y guarda en variable N (buffer en data section)
+; Emite: syscall read(0, addr, len)
+instr_leer:
+    push eax ebx ecx edx esi edi
+
+    ; Verificar token[1] = registro
+    mov esi, [tokens + 4]
+    call parse_reg
+    jc .error
+
+    ; Verificar token[2] = ","
+    mov esi, [tokens + 8]
+    cmp byte [esi], ','
+    jne .error
+
+    ; Token[3] = nombre de variable
+    mov esi, [tokens + 12]
+    cmp byte [esi], '@'
+    jne .error
+    inc esi
+
+    ; Buscar variable en lab_name
+    xor ebx, ebx
+    mov edi, lab_name
+.buscar_loop:
+    cmp ebx, [lab_cnt]
+    jae .no_encontrado
+
+    push esi edi
+    mov ecx, esi
+.cmp_loop:
+    mov al, [ecx]
+    mov ah, [edi]
+    cmp al, ah
+    jne .cmp_no
+    test al, al
+    jz .cmp_si
+    inc ecx
+    inc edi
+    jmp .cmp_loop
+.cmp_no:
+    pop edi esi
+    add edi, LAB_SZ
+    inc ebx
+    jmp .buscar_loop
+.cmp_si:
+    pop edi esi
+
+    ; ebx = indice de variable, lab_addr[ebx] = offset en output
+    ; Direccion real = out_pos + lab_addr[ebx] + 9 (despues de stub)
+    mov eax, [out_pos]
+    add eax, [lab_addr + ebx*4]
+    add eax, 9             ; saltar el stub del handler
+
+    ; Guardar patch para resolver address
+    mov ecx, [patch_cnt]
+    cmp ecx, MAX_LABS
+    jae patch_err
+    mov [patch_ip + ecx*4], eax
+    mov [patch_str + ecx*4], ebx   ; reusar patch_str para var index
+    inc [patch_cnt]
+
+    ; mov eax, 3 (sys_read)
+    mov al, 0xB8
+    call emitir_byte
+    mov eax, 3
+    call emitir_dword
+
+    ; mov ebx, 0 (stdin)
+    mov al, 0xBB
+    call emitir_byte
+    xor eax, eax
+    call emitir_dword
+
+    ; mov ecx, <addr placeholder>
+    mov al, 0xB9
+    call emitir_byte
+    mov eax, [lab_addr + ebx*4]   ; placeholder real
+    call emitir_dword
+
+    ; mov edx, 255 (max len)
+    mov al, 0xBA
+    call emitir_byte
+    mov eax, 255
+    call emitir_dword
+
+    ; int 0x80
+    mov al, 0xCD
+    call emitir_byte
+    mov al, 0x80
+    call emitir_byte
+
+    pop edi esi edx ecx ebx eax
+    ret
+
+.no_encontrado:
+    pop edi esi edx ecx ebx eax
+    jmp var_err
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
 ; ---- str_len: longitud de string en esi ----
 str_len:
     push esi
@@ -1306,6 +1501,232 @@ str_len:
     jmp .loop
 .fin:
     pop esi
+    ret
+
+; ---- instr_escribir: escribir @str (print to stdout) ----
+; Syntax: escribir @NOMBRE
+; Emite: codigo para calcular addr + strlen + syscall write
+instr_escribir:
+    push eax ebx ecx edx esi edi
+
+    ; Verificar token[1] = @nombre
+    mov esi, [tokens + 4]
+    cmp byte [esi], '@'
+    jne .error
+    inc esi                 ; saltar @
+
+    ; Buscar string en str_name
+    xor ebx, ebx            ; indice = 0
+    mov edi, str_name
+.buscar_loop:
+    cmp ebx, [str_cnt]
+    jae .no_encontrado
+
+    ; Comparar nombre
+    push esi edi
+    mov ecx, esi
+.cmp_loop:
+    mov al, [ecx]
+    mov ah, [edi]
+    cmp al, ah
+    jne .cmp_no
+    test al, al
+    jz .cmp_si
+    inc ecx
+    inc edi
+    jmp .cmp_loop
+.cmp_no:
+    pop edi esi
+    add edi, LAB_SZ
+    inc ebx
+    jmp .buscar_loop
+.cmp_si:
+    pop edi esi
+
+    ; Encontrado: ebx = indice del string
+    ; Guardar parche: patch_ip[patch_cnt] = cur_ip, patch_str[patch_cnt] = ebx
+    mov eax, [patch_cnt]
+    cmp eax, MAX_LABS
+    jae patch_err
+    mov ecx, [cur_ip]
+    mov [patch_ip + eax*4], ecx
+    mov [patch_str + eax*4], ebx
+    inc [patch_cnt]
+
+    ; Emitir placeholder: B8 <dword 0> (mov eax, 0 — sera parcheado)
+    mov al, 0xB8
+    call emitir_byte
+    xor eax, eax
+    call emitir_dword       ; 5 bytes placeholder
+
+    ; Emitir strlen loop + write syscall
+    ; eax = puntero al string (parcheado por parchear_strings con direccion real)
+
+    ; strlen loop: edi = eax (ptr), ecx = 0 (count)
+    ; push eax / mov edi, eax / xor ecx, ecx
+    mov al, 0x50            ; push eax
+    call emitir_byte
+    mov al, 0x89            ; mov edi, eax
+    call emitir_byte
+    mov al, 0xC7            ; ModRM: mod=11, reg=111(edi), rm=000(eax)
+    call emitir_byte
+
+    ; xor ecx, ecx
+    mov al, 0x31            ; xor ecx, ecx
+    call emitir_byte
+    mov al, 0xC9            ; ModRM: mod=11, reg=001(ecx), rm=001(ecx)
+    call emitir_byte
+
+    ; .loop: cmp byte [edi+ecx], 0
+    mov al, 0x80            ; cmp byte [edi+ecx], imm8
+    call emitir_byte
+    mov al, 0x3C            ; ModRM: mod=00, reg=111(/7), rm=100(sib)
+    call emitir_byte
+    mov al, 0x0F            ; SIB: base=edi, index=ecx, scale=1
+    call emitir_byte
+    xor eax, eax            ; imm8 = 0
+    call emitir_byte
+
+    ; je .done (placeholder, 2 bytes)
+    mov al, 0x74            ; je rel8
+    call emitir_byte
+    mov al, 0x03            ; offset = 3 (salta sobre inc+jmp)
+    call emitir_byte
+
+    ; inc ecx
+    mov al, 0x41            ; inc ecx
+    call emitir_byte
+
+    ; jmp .loop (-9 bytes: vuelve al cmp)
+    mov al, 0xEB            ; jmp rel8
+    call emitir_byte
+    mov al, 0xF7            ; -9
+    call emitir_byte
+
+    ; pop eax (restaurar puntero)
+    mov al, 0x58            ; pop eax
+    call emitir_byte
+
+    ; edx = ecx (len)
+    mov al, 0x89            ; mov edx, ecx
+    call emitir_byte
+    mov al, 0xCA            ; ModRM: mod=11, reg=010(edx), rm=001(ecx)
+    call emitir_byte
+
+    ; ecx = eax (ptr)
+    mov al, 0x89            ; mov ecx, eax
+    call emitir_byte
+    mov al, 0xC1            ; ModRM: mod=11, reg=000(eax), rm=001(ecx) -> ecx = eax
+    call emitir_byte
+
+    ; ebx = 1 (stdout)
+    mov al, 0xBB            ; mov ebx, 1
+    call emitir_byte
+    mov eax, 1
+    call emitir_dword
+
+    ; eax = 4 (SYS_WRITE)
+    mov al, 0xB8            ; mov eax, 4
+    call emitir_byte
+    mov eax, 4
+    call emitir_dword
+
+    ; int 0x80
+    mov al, 0xCD            ; int 0x80
+    call emitir_byte
+    mov al, 0x80
+    call emitir_byte
+
+    pop edi esi edx ecx ebx eax
+    ret
+
+.no_encontrado:
+    pop edi esi edx ecx ebx eax
+    jmp str_err
+
+.error:
+    pop edi esi edx ecx ebx eax
+    jmp syn_err
+
+; ---- parchear_strings: resolver referencias y emitir datos ----
+; Llamar despues de pase2, antes de escribir el archivo de salida
+parchear_strings:
+    push eax ebx ecx edx esi edi
+
+    cmp [patch_cnt], 0
+    je .sin_parches
+
+    ; Para cada parche, calcular direccion real del string
+    xor ebx, ebx            ; indice de parche
+.parche_loop:
+    cmp ebx, [patch_cnt]
+    jae .fin_parches
+
+    ; Obtener string index
+    mov ecx, [patch_str + ebx*4]
+
+    ; Calcular offset del string en str_data
+    xor edx, edx            ; offset acumulado
+    xor esi, esi            ; indice de string
+.calc_offset:
+    cmp esi, ecx
+    jae .offset_done
+    mov eax, [str_lengths + esi*4]
+    add edx, eax
+    inc edx                 ; +1 para NUL
+    inc esi
+    jmp .calc_offset
+.offset_done:
+
+    ; Direccion real = out_pos (code_size) + edx (str_offset)
+    mov eax, [out_pos]
+    add eax, edx
+
+    ; Escribir direccion en out_buf + patch_ip[ebx] + 1 (despues del B8)
+    mov edi, out_buf
+    add edi, [patch_ip + ebx*4]
+    inc edi                 ; saltar opcode B8
+    mov [edi], eax
+
+    inc ebx
+    jmp .parche_loop
+
+.fin_parches:
+    ; Emitir datos de strings al final del codigo
+    xor ebx, ebx            ; indice de string
+.str_loop:
+    cmp ebx, [str_cnt]
+    jae .sin_parches
+
+    ; Copiar str_data[offset..offset+len] a out_buf
+    mov esi, str_data
+    ; Calcular offset
+    xor ecx, ecx
+    xor edi, edi
+.calc_strofs:
+    cmp edi, ebx
+    jae .copiar_str
+    mov eax, [str_lengths + edi*4]
+    add ecx, eax
+    inc ecx                 ; +1 NUL
+    inc edi
+    jmp .calc_strofs
+.copiar_str:
+    add esi, ecx            ; esi = puntero al string en str_data
+    mov ecx, [str_lengths + ebx*4]
+    inc ecx                 ; +1 para NUL
+.copiar_loop:
+    push ecx
+    lodsb
+    call emitir_byte
+    pop ecx
+    loop .copiar_loop
+
+    inc ebx
+    jmp .str_loop
+
+.sin_parches:
+    pop edi esi edx ecx ebx eax
     ret
 
 ; ---- Manejadores de error ----
@@ -1428,3 +1849,82 @@ str_err:
     mov eax, SYS_EXIT
     mov ebx, 1
     int 0x80
+
+var_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_var_not
+    mov edx, msg_var_not_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+; ---- parse_reg: convertir nombre de registro a indice ----
+; Entrada: esi = puntero al nombre del registro
+; Salida: eax = 0..3 (al, cl, dl, bl), CF si error
+; Registros soportados: al, cl, dl, bl
+parse_reg:
+    push esi ecx
+    mov ecx, esi
+
+    ; Verificar longitud 2
+    cmp byte [ecx+2], 0
+    jne .error
+
+    ; Verificar que empiece con 'a', 'c', 'd', 'b'
+    mov al, [ecx]
+    cmp al, 'a'
+    je .reg_a
+    cmp al, 'c'
+    je .reg_c
+    cmp al, 'd'
+    je .reg_d
+    cmp al, 'b'
+    je .reg_b
+    jmp .error
+
+.reg_a:
+    cmp byte [ecx+1], 'l'
+    jne .error
+    xor eax, eax          ; 0 = al
+    clc
+    pop ecx esi
+    ret
+
+.reg_c:
+    cmp byte [ecx+1], 'l'
+    jne .error
+    mov eax, 1            ; 1 = cl
+    clc
+    pop ecx esi
+    ret
+
+.reg_d:
+    cmp byte [ecx+1], 'l'
+    jne .error
+    mov eax, 2            ; 2 = dl
+    clc
+    pop ecx esi
+    ret
+
+.reg_b:
+    cmp byte [ecx+1], 'l'
+    jne .error
+    mov eax, 3            ; 3 = bl
+    clc
+    pop ecx esi
+    ret
+
+.error:
+    stc
+    pop ecx esi
+    ret
+
+; ---- reg_enc: codificacion ModRM para registros ----
+; Indice: 0=al(cl), 1=cl(dl), 2=dl(bl), 3=bl
+reg_enc db 0, 1, 2, 3
+
+; ---- Mensajes de error ----
+msg_var_not db "Error: variable no encontrada", 10
+msg_var_not_sz = $ - msg_var_not

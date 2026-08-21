@@ -67,6 +67,76 @@ else
 fi
 
 echo
+echo "--- Cadena (strings) ---"
+test_inst "cadena con igual"              "cadena MSG = \"hola\"\ndetener\n"
+test_inst "cadena sin igual"              "cadena MSG \"hola\"\ndetener\n"
+test_inst "cadena con igual sin comillas" "cadena MSG = hola\ndetener\n"
+test_inst "cadena sin igual sin comillas" "cadena MSG hola\ndetener\n"
+test_inst "cadena vacia"                  "cadena MSG = \"\"\ndetener\n"
+test_inst "cadena sin comilla de cierre"  "cadena MSG = \"sincierre\ndetener\n"
+test_inst "multiples cadenas"             "cadena A = \"primera\"\ncadena B = \"segunda\"\ndetener\n"
+test_inst "cadena y const juntos"         "const N = 5\ncadena MSG = \"texto\"\nmover A N\ndetener\n"
+
+# Estos dos casos deben preservar la barra invertida literal en el
+# contenido, por lo que se evita test_inst (que usa printf con
+# interpretacion de escapes sobre toda la cadena de formato).
+printf '%s' 'cadena MSG = "linea1\nlinea2"
+detener
+' > /tmp/t.ccdl
+if $V1 /tmp/t.ccdl $TMP 2>/dev/null; then
+    echo "  PASS: cadena con escape \\n interno"
+    PASS=$((PASS+1))
+else
+    echo "  FAIL: cadena con escape \\n interno"
+    FAIL=$((FAIL+1))
+fi
+
+printf '%s' 'cadena MSG = "a\qb"
+detener
+' > /tmp/t.ccdl
+if $V1 /tmp/t.ccdl $TMP 2>/dev/null; then
+    echo "  PASS: cadena con backslash no reconocido"
+    PASS=$((PASS+1))
+else
+    echo "  FAIL: cadena con backslash no reconocido"
+    FAIL=$((FAIL+1))
+fi
+
+echo
+echo "--- Cadena: errores ---"
+test_err "cadena sin nombre ni contenido" "cadena\ndetener\n"
+test_err "cadena sin contenido"          "cadena MSG\ndetener\n"
+test_err "cadena con = sin contenido"    "cadena MSG =\ndetener\n"
+
+NOMBRE_LARGO=$(printf 'A%.0s' {1..100})
+test_err "cadena con nombre muy largo"   "cadena $NOMBRE_LARGO = \"x\"\ndetener\n"
+
+echo
+echo "--- Cadena: limite de tabla (256 max) ---"
+STR_MAX_SRC=""
+for i in {1..256}; do
+    STR_MAX_SRC="${STR_MAX_SRC}cadena S$i = \"x\"\n"
+done
+STR_MAX_SRC="${STR_MAX_SRC}detener\n"
+test_inst "256 cadenas (limite exacto)"  "$STR_MAX_SRC"
+
+STR_FULL_SRC=""
+for i in {1..257}; do
+    STR_FULL_SRC="${STR_FULL_SRC}cadena S$i = \"x\"\n"
+done
+STR_FULL_SRC="${STR_FULL_SRC}detener\n"
+test_err "257 cadenas (tabla llena)"     "$STR_FULL_SRC"
+
+echo
+if $V1 $EJEM/test_cadena.ccdl $TMP 2>/dev/null; then
+    echo "  PASS: test_cadena.ccdl INTEGRACION"
+    PASS=$((PASS+1))
+else
+    echo "  FAIL: test_cadena.ccdl INTEGRACION"
+    FAIL=$((FAIL+1))
+fi
+
+echo
 echo "=== RESULTADOS: $PASS pass, $FAIL fail ==="
 echo
 [ $FAIL -eq 0 ] && echo "TODO OK!" || echo "HAY FALLOS"

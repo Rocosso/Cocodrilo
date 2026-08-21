@@ -1,0 +1,14 @@
+/ Test de E/S: escribir, leer, salir
+/ Imprime un saludo, lee un caracter, y sale
+
+cadena SALUDO = "Hola, Cocodrilo!"
+cadena PREGUNTA = "Escribe algo: "
+
+escribir @SALUDO
+escribir @PREGUNTA
+leer A, @INPUT
+salir A
+
+@INPUT:
+mover A, 0
+detener
