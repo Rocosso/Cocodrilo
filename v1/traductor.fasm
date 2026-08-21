@@ -946,10 +946,6 @@ pase2:
     call instr_leer
     jmp .loop
 
-.do_salir:
-    call instr_salir
-    jmp .loop
-
 .error:
     mov eax, SYS_WRITE
     mov ebx, STDERR
