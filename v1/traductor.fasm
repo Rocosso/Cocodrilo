@@ -49,6 +49,17 @@ cst_name rb MAX_LABS * LAB_SZ
 cst_val  rd MAX_LABS
 cst_cnt  rd 1
 
+str_data    rb BUFFER_SZ         ; datos de strings concatenados
+str_data_sz rd 1                 ; bytes usados en str_data
+str_name    rb MAX_LABS * LAB_SZ ; nombre del string
+str_addr    rd MAX_LABS          ; offset dentro de str_data
+str_len     rd MAX_LABS          ; longitud de cada string
+str_cnt     rd 1                 ; cantidad de strings
+
+patch_ip    rd MAX_LABS          ; cur_ip donde se emitio la referencia
+patch_str   rd MAX_LABS          ; indice del string referenciado
+patch_cnt   rd 1
+
 line_buf rb 256
 tokens   rd MAX_TOKS
 tok_cnt  rd 1
@@ -73,6 +84,12 @@ msg_tok_full  db 'Error: demasiados tokens en linea', 10
 msg_tok_full_sz = $ - msg_tok_full
 msg_buf_full  db 'Error: buffer de salida lleno', 10
 msg_buf_full_sz = $ - msg_buf_full
+msg_str_full  db 'Error: tabla de strings llena', 10
+msg_str_full_sz = $ - msg_str_full
+msg_patch_full db 'Error: demasiadas referencias a strings', 10
+msg_patch_full_sz = $ - msg_patch_full
+msg_str_not   db 'Error: string no encontrado', 10
+msg_str_not_sz = $ - msg_str_not
 
 segment readable executable
 
@@ -103,6 +120,9 @@ _start:
     mov [cur_ip], eax
     mov [lab_cnt], eax
     mov [cst_cnt], eax
+    mov [str_data_sz], eax
+    mov [str_cnt], eax
+    mov [patch_cnt], eax
 
     ; Abrir entrada
     mov eax, SYS_OPEN
@@ -561,7 +581,8 @@ pase1:
     jne .loop
     cmp byte [esi+6], 0
     jne .loop
-    ; Es "cadena" - procesar en siguiente PR
+    ; Es "cadena"
+    call procesar_cadena
     jmp .loop
 
 .fin:
@@ -613,6 +634,104 @@ procesar_const:
     inc [cst_cnt]
 
     pop edi esi edx ecx ebx eax
+    ret
+
+; ---- procesar_cadena: cadena NOMBRE = "contenido" ----
+procesar_cadena:
+    push eax ebx ecx esi edi
+
+    ; Verificar que hay al menos 3 tokens (cadena NOMBRE "...")
+    cmp [tok_cnt], 3
+    jb .error
+
+    ; Token[1] = nombre
+    mov esi, [tokens + 4]
+    mov edi, str_name
+    mov eax, [str_cnt]
+    cmp eax, MAX_LABS
+    jae str_full
+    imul eax, LAB_SZ
+    add edi, eax
+    mov ecx, LAB_SZ
+    call str_cpy_max
+    jc name_err
+
+    ; Token[2] = "=" o contenido
+    mov esi, [tokens + 8]
+    lodsb
+    cmp al, '='
+    je .con_valor
+
+    ; Sin "=", token[2] es el contenido directamente
+    dec esi
+    call .copiar_contenido
+    jmp .fin
+
+.con_valor:
+    ; Con "=", token[3] es el contenido
+    cmp [tok_cnt], 4
+    jb .error
+    mov esi, [tokens + 12]
+    call .copiar_contenido
+
+.fin:
+    inc [str_cnt]
+    pop edi esi ecx ebx eax
+    ret
+
+.error:
+    pop edi esi ecx ebx eax
+    jmp syn_err
+
+; ---- copiar_contenido: copia string entre comillas a str_data ----
+; esi = puntero al primer caracter (despues de la comilla de apertura)
+.copiar_contenido:
+    push eax ecx esi edi
+    ; Saltar comilla de apertura si existe
+    cmp byte [esi], '"'
+    jne .sin_comillas
+    inc esi
+.sin_comillas:
+    ; Calcular destino en str_data
+    mov edi, str_data
+    add edi, [str_data_sz]
+    xor ecx, ecx            ; longitud = 0
+
+.copiar_loop:
+    lodsb
+    cmp al, '"'
+    je .fin_copia
+    cmp al, 0
+    je .fin_copia
+    cmp al, 10              ; newline
+    je .escape_n
+    cmp al, '\'
+    jne .guardar_byte
+    ; Secuencia de escape
+    lodsb
+    cmp al, 'n'
+    jne .guardar_byte
+    mov al, 10              ; \n -> newline
+.guardar_byte:
+    stosb
+    inc ecx
+    jmp .copiar_loop
+
+.escape_n:
+    mov al, 10
+    jmp .guardar_byte
+
+.fin_copia:
+    ; Terminar con NUL
+    xor al, al
+    stosb
+    ; Registrar longitud
+    mov eax, [str_cnt]
+    mov [str_len + eax*4], ecx
+    ; Avanzar str_data_sz (longitud + 1 para NUL)
+    inc ecx
+    add [str_data_sz], ecx
+    pop edi esi ecx eax
     ret
 
 ; ---- PASE 2: generar codigo maquina ----
@@ -1267,6 +1386,36 @@ buf_err:
     mov ebx, STDERR
     mov ecx, msg_buf_full
     mov edx, msg_buf_full_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+str_full:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_str_full
+    mov edx, msg_str_full_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+patch_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_patch_full
+    mov edx, msg_patch_full_sz
+    int 0x80
+    mov eax, SYS_EXIT
+    mov ebx, 1
+    int 0x80
+
+str_err:
+    mov eax, SYS_WRITE
+    mov ebx, STDERR
+    mov ecx, msg_str_not
+    mov edx, msg_str_not_sz
     int 0x80
     mov eax, SYS_EXIT
     mov ebx, 1
