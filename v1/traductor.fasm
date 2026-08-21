@@ -53,7 +53,7 @@ str_data    rb BUFFER_SZ         ; datos de strings concatenados
 str_data_sz rd 1                 ; bytes usados en str_data
 str_name    rb MAX_LABS * LAB_SZ ; nombre del string
 str_addr    rd MAX_LABS          ; offset dentro de str_data
-str_len     rd MAX_LABS          ; longitud de cada string
+str_lengths rd MAX_LABS          ; longitud de cada string
 str_cnt     rd 1                 ; cantidad de strings
 
 patch_ip    rd MAX_LABS          ; cur_ip donde se emitio la referencia
@@ -730,7 +730,7 @@ procesar_cadena:
     stosb
     ; Registrar longitud
     mov eax, [str_cnt]
-    mov [str_len + eax*4], ecx
+    mov [str_lengths + eax*4], ecx
     ; Avanzar str_data_sz (longitud + 1 para NUL)
     inc ecx
     add [str_data_sz], ecx
@@ -1313,7 +1313,7 @@ str_len:
 ; Syntax: escribir @NOMBRE
 ; Emite: codigo para calcular addr + strlen + syscall write
 instr_escribir:
-    push eax ebx ecx esi edi
+    push eax ebx ecx edx esi edi
 
     ; Verificar token[1] = @nombre
     mov esi, [tokens + 4]
@@ -1366,32 +1366,7 @@ instr_escribir:
     call emitir_dword       ; 5 bytes placeholder
 
     ; Emitir strlen loop + write syscall
-    ; eax = puntero al string (calculado: code_size + str_offset)
-    ;eax ya esta en el placeholder, calculamos luego
-
-    ; Calcular addr: eax = cur_ip (despues del placeholder)
-    ; emitir: add eax, <str_offset> (05 <dword>)
-    mov al, 0x05            ; add eax, imm32
-    call emitir_byte
-    ; Emitir str_offset como placeholder (se parcheara)
-    mov eax, ebx            ; guardar indice
-    push ebx
-    ; Calcular offset aproximado del string
-    ; offset = sumatoria de longitudes anteriores + num_strings_anteriores
-    xor ecx, ecx            ; offset acumulado
-    xor ebx, ebx            ; indice actual
-.calc_offset:
-    cmp ebx, eax
-    jae .calc_done
-    mov edx, [str_len + ebx*4]
-    add ecx, edx
-    inc ecx                 ; +1 para NUL
-    inc ebx
-    jmp .calc_offset
-.calc_done:
-    mov eax, ecx
-    pop ebx
-    call emitir_dword       ; add eax, <offset>
+    ; eax = puntero al string (parcheado por parchear_strings con direccion real)
 
     ; strlen loop: edi = eax (ptr), ecx = 0 (count)
     ; push eax / mov edi, eax / xor ecx, ecx
@@ -1421,17 +1396,17 @@ instr_escribir:
     ; je .done (placeholder, 2 bytes)
     mov al, 0x74            ; je rel8
     call emitir_byte
-    mov al, 0x02            ; offset = 2 (salta sobre inc+jmp)
+    mov al, 0x03            ; offset = 3 (salta sobre inc+jmp)
     call emitir_byte
 
     ; inc ecx
     mov al, 0x41            ; inc ecx
     call emitir_byte
 
-    ; jmp .loop (-8 bytes: 1+1+1+1+1+1+1+1 = 8 desde inc hasta cmp)
+    ; jmp .loop (-9 bytes: vuelve al cmp)
     mov al, 0xEB            ; jmp rel8
     call emitir_byte
-    mov al, 0xF8            ; -8
+    mov al, 0xF7            ; -9
     call emitir_byte
 
     ; pop eax (restaurar puntero)
@@ -1468,15 +1443,15 @@ instr_escribir:
     mov al, 0x80
     call emitir_byte
 
-    pop edi esi ecx ebx eax
+    pop edi esi edx ecx ebx eax
     ret
 
 .no_encontrado:
-    pop edi esi ecx ebx eax
+    pop edi esi edx ecx ebx eax
     jmp str_err
 
 .error:
-    pop edi esi ecx ebx eax
+    pop edi esi edx ecx ebx eax
     jmp syn_err
 
 ; ---- parchear_strings: resolver referencias y emitir datos ----
@@ -1502,7 +1477,7 @@ parchear_strings:
 .calc_offset:
     cmp esi, ecx
     jae .offset_done
-    mov eax, [str_len + esi*4]
+    mov eax, [str_lengths + esi*4]
     add edx, eax
     inc edx                 ; +1 para NUL
     inc esi
@@ -1537,14 +1512,14 @@ parchear_strings:
 .calc_strofs:
     cmp edi, ebx
     jae .copiar_str
-    mov eax, [str_len + edi*4]
+    mov eax, [str_lengths + edi*4]
     add ecx, eax
     inc ecx                 ; +1 NUL
     inc edi
     jmp .calc_strofs
 .copiar_str:
     add esi, ecx            ; esi = puntero al string en str_data
-    mov ecx, [str_len + ebx*4]
+    mov ecx, [str_lengths + ebx*4]
     inc ecx                 ; +1 para NUL
 .copiar_loop:
     push ecx
