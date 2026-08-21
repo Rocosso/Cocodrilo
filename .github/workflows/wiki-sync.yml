@@ -1,0 +1,42 @@
+name: Wiki Sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+
+permissions:
+  contents: write
+
+jobs:
+  sync-wiki:
+    name: Sync Wiki Pages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone wiki repo
+        run: |
+          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git /tmp/wiki
+
+      - name: Sync wiki pages
+        run: |
+          # Copiar todas las paginas .md del directorio wiki/ a la wiki
+          cp wiki/*.md /tmp/wiki/ 2>/dev/null || true
+
+          # Verificar si hay cambios
+          cd /tmp/wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No wiki changes to sync"
+          else
+            git add -A
+            git commit -m "docs: sync wiki from main (${{ github.sha }})"
+            git push
+            echo "Wiki synced successfully"
+          fi

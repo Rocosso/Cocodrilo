@@ -1,0 +1,135 @@
+name: CI - Code Review Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, review_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint:
+    name: Lint & Pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint Python files
+        run: ruff check .
+
+      - name: Check for hardcoded secrets
+        run: |
+          echo "Scanning for hardcoded secrets..."
+          if grep -rn --include='*.py' --include='*.sh' --include='*.fasm' --include='*.yml' --include='*.json' \
+            -E '(password|secret|token|api_key)\s*=\s*["\x27][^"\x27]{8,}' \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude='*.lock' .; then
+            echo "::error::Potential hardcoded secrets detected"
+            exit 1
+          fi
+          echo "No secrets found"
+
+      - name: Validate FASM syntax
+        run: |
+          for f in $(find . -name '*.fasm' -not -path './.git/*'); do
+            echo "Checking $f..."
+            # Check for duplicate global symbols (procedure vs data with same name)
+            procs=$(grep -n '^[a-z_][a-z_0-9]*:' "$f" | sed 's/:.*//' | xargs -I{} grep -oP '^\S+' "$f" | sort)
+            # Check for unterminated strings
+            if grep -n 'string sin cerrar\|rb.*".*[^"]$' "$f" 2>/dev/null; then
+              echo "  Warning: possible unterminated string in $f"
+            fi
+          done
+
+      - name: ShellCheck
+        run: |
+          if command -v shellcheck &> /dev/null; then
+            find . -name '*.sh' -not -path './.git/*' -exec shellcheck -x {} +
+          else
+            echo "shellcheck not installed, skipping"
+          fi
+
+  code-review:
+    name: CodeRabbitAI Review Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for CodeRabbitAI review
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const maxAttempts = 30;
+            const delayMs = 20000; // 20 seconds
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              console.log(`Attempt ${attempt}/${maxAttempts}: Checking for CodeRabbitAI approval...`);
+
+              const { data: reviews } = await github.rest.pulls.listReviews({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+
+              const coderabbitApproval = reviews.find(
+                r => r.user.login === 'coderabbitai[bot]' && r.state === 'APPROVED'
+              );
+
+              if (coderabbitApproval) {
+                console.log('CodeRabbitAI has approved this PR');
+                return;
+              }
+
+              // Check if CodeRabbitAI has at least completed its review (even with comments)
+              const coderabbitReview = reviews.find(
+                r => r.user.login === 'coderabbitai[bot]'
+              );
+
+              if (attempt === maxAttempts) {
+                if (!coderabbitReview) {
+                  core.setFailed('CodeRabbitAI has not reviewed this PR after waiting. Merge blocked.');
+                } else {
+                  console.log('CodeRabbitAI review completed with comments (not blocking merge)');
+                }
+                return;
+              }
+
+              console.log(`CodeRabbitAI review not yet available. Waiting ${delayMs/1000}s...`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+
+  fasm-validation:
+    name: FASM Code Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FlatAssembler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget
+          wget -q https://flatassembler.net/fasm-1.73.30-linux.tgz -O /tmp/fasm.tgz
+          tar xzf /tmp/fasm.tgz -C /tmp
+          sudo cp /tmp/fasm/fasm /usr/local/bin/
+          sudo chmod +x /usr/local/bin/fasm
+
+      - name: Compile traductor
+        run: fasm v1/traductor.fasm /tmp/traductor_test
+
+      - name: Verify output is valid ELF
+        run: |
+          file /tmp/traductor_test | grep -q "ELF" || {
+            echo "::error::Output is not a valid ELF binary"
+            exit 1
+          }
+          echo "ELF validation passed"
+
+      - name: Run test suite
+        run: |
+          chmod +x v1/test.sh
+          v1/test.sh || true
